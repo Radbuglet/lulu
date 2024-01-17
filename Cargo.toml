@@ -1,0 +1,11 @@
+[package]
+name = "lulu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aunty = { git = "https://github.com/Radbuglet/aunty.git", version = "0.1.0" }
+env_logger = "0.10.1"
+hashbrown = "0.14.3"
+log = "0.4.20"
+rustc-hash = "1.1.0"
