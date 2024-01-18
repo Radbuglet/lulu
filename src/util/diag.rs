@@ -1,10 +1,10 @@
-use aunty::make_extensible;
-
 use crate::util::span::Span;
+
+use aunty::make_extensible;
 
 // === DiagnosticReporter === //
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DiagnosticReporter {
     diagnostics: Vec<Diagnostic>,
     has_errors: bool,
@@ -64,6 +64,10 @@ impl Diagnostic {
             windows: Vec::new(),
             subs: Vec::new(),
         }
+    }
+
+    pub fn span_err(span: Span, message: impl Into<String>) -> Self {
+        Self::new(DiagnosticKind::Error, message).with_offending_span(span)
     }
 
     pub fn with_offending_span(mut self, span: Span) -> Self {

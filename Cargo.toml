@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.79"
 aunty = { git = "https://github.com/Radbuglet/aunty.git", version = "0.1.0" }
+color-backtrace = "0.6.1"
+colored = "2.1.0"
 env_logger = "0.10.1"
 hashbrown = "0.14.3"
 log = "0.4.20"
 rustc-hash = "1.1.0"
+unicode-xid = "0.2.4"

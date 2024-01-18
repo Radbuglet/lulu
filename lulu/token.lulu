@@ -1,0 +1,9 @@
+// Hello, World!
+/* of pie! */
+
+fn main() {
+    let foo = "whee\n\
+              |woo \
+              |whe";
+    let bar = 'f';
+}

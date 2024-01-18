@@ -7,8 +7,9 @@ use aunty::Obj;
 use rustc_hash::FxHashSet;
 
 use super::{
-    diag::{Diagnostic, DiagnosticKind, DiagnosticReporter},
-    span::{Intern, Span},
+    diag::{Diagnostic, DiagnosticReporter},
+    intern::Intern,
+    span::{FileLoc, Span},
 };
 
 // === LookaheadResult === //
@@ -40,7 +41,7 @@ impl<T, E> LookaheadResult for Result<T, E> {
 #[derive(Debug, Clone)]
 pub struct ParseContext {
     diagnostics: Obj<DiagnosticReporter>,
-    while_parsing: RefCell<Vec<Intern>>,
+    while_parsing: RefCell<Vec<(FileLoc, Intern)>>,
     got_stuck: Cell<bool>,
 }
 
@@ -61,8 +62,8 @@ impl ParseContext {
         }
     }
 
-    pub fn while_parsing(&self, what: Intern) -> WhileParsingGuard<'_> {
-        self.while_parsing.borrow_mut().push(what);
+    pub fn while_parsing(&self, starting_at: FileLoc, what: Intern) -> WhileParsingGuard<'_> {
+        self.while_parsing.borrow_mut().push((starting_at, what));
 
         WhileParsingGuard {
             cx: self,
@@ -72,6 +73,10 @@ impl ParseContext {
 
     pub fn got_stuck(&self) -> bool {
         self.got_stuck.get()
+    }
+
+    pub fn diagnostics(&self) -> &Obj<DiagnosticReporter> {
+        &self.diagnostics
     }
 }
 
@@ -86,7 +91,7 @@ impl Drop for WhileParsingGuard<'_> {
     fn drop(&mut self) {
         let popped = self.cx.while_parsing.borrow_mut().pop();
         if !panicking() {
-            assert_eq!(popped, Some(self.top));
+            assert!(matches!(popped, Some((_, v)) if v == self.top));
         }
     }
 }
@@ -103,8 +108,11 @@ impl<'cx, I> ParseSequence<'cx, I> {
         self.cx.enter(cursor)
     }
 
-    pub fn while_parsing(&self, what: Intern) -> WhileParsingGuard<'cx> {
-        self.cx.while_parsing(what)
+    pub fn while_parsing(&self, what: Intern) -> WhileParsingGuard<'cx>
+    where
+        I: ParseCursor,
+    {
+        self.cx.while_parsing(self.next_loc(), what)
     }
 
     pub fn expect<R: LookaheadResult>(
@@ -142,6 +150,9 @@ impl<'cx, I> ParseSequence<'cx, I> {
 
         expectations.sort_unstable();
 
+        if let Some(last) = (expectations.len() > 1).then(|| expectations.last_mut()).flatten() {
+            last.insert_str(0, "or ");
+        }
         let expectations = expectations.join(", ");
 
         let while_parsing = {
@@ -154,23 +165,48 @@ impl<'cx, I> ParseSequence<'cx, I> {
                     stack
                         .iter()
                         .rev()
-                        .map(ToString::to_string)
+                        .map(|(loc, what)| format!("{what} starting at {loc:?}"))
                         .collect::<Vec<_>>()
                         .join(" in ")
                 )
             }
         };
 
-        self.cx.diagnostics.report(
-            Diagnostic::new(
-                DiagnosticKind::Error,
-                format!("expected {expectations}{while_parsing}"),
-            )
-            .with_offending_span(span),
-        );
+        self.diagnostics().report(Diagnostic::span_err(
+            span,
+            format!("expected {expectations}{while_parsing}"),
+        ));
 
         // Attempt to get unstuck
         recover(&mut self.cursor);
+    }
+
+    pub fn error(&mut self, diagnostic: impl Into<Diagnostic>, recover: impl FnOnce(&mut I)) {
+        self.cx.got_stuck.set(true);
+        self.diagnostics().report(diagnostic.into());
+        recover(&mut self.cursor);
+    }
+
+    pub fn next_span(&self) -> Span
+    where
+        I: ParseCursor,
+    {
+        self.cursor.next_span()
+    }
+
+    pub fn next_loc(&self) -> FileLoc
+    where
+        I: ParseCursor,
+    {
+        self.next_span().start()
+    }
+
+    pub fn context(&self) -> &'cx ParseContext {
+        self.cx
+    }
+
+    pub fn diagnostics(&self) -> &Obj<DiagnosticReporter> {
+        &self.cx.diagnostics
     }
 }
 
