@@ -1,6 +1,8 @@
-use aunty::Entity;
+use core::fmt;
 
-use super::parser::{ParseCursor, ParseSequence};
+use aunty::{CyclicCtor, Entity, Obj, ObjRef};
+
+use super::parser::{ForkableCursor, ParseCursor, ParseSequence};
 
 // === Files === //
 
@@ -9,14 +11,93 @@ pub struct FileData {
     pub me: Entity,
     pub human_path: String,
     pub data: String,
+    pub line_start_offsets: Vec<usize>,
 }
 
 impl FileData {
+    pub fn new(path: String, data: String) -> impl CyclicCtor<Self> {
+        |me, _| {
+            let mut line_start_offsets = Vec::new();
+            if !data.is_empty() {
+                line_start_offsets.push(0);
+            }
+
+            let mut reader = NormalizedStrIterator::new(&data);
+
+            while let Some((_, ch)) = reader.next() {
+                if ch == '\n' {
+                    line_start_offsets.push(reader.next_pos());
+                }
+            }
+
+            Self {
+                me,
+                human_path: path,
+                data,
+                line_start_offsets,
+            }
+        }
+    }
+
     pub fn start_loc(&self) -> FileLoc {
         FileLoc {
             file: self.me,
-            pos: FilePos { char_index: 0 },
+            pos: FilePos { idx: 0 },
         }
+    }
+
+    pub fn end_loc(&self) -> FileLoc {
+        FileLoc {
+            file: self.me,
+            pos: FilePos {
+                idx: self.data.len(),
+            },
+        }
+    }
+
+    pub fn line_start(&self, idx: usize) -> FileLoc {
+        FileLoc {
+            file: self.me,
+            pos: FilePos {
+                idx: self.line_start_offsets[idx],
+            },
+        }
+    }
+
+    fn line_of_pos(&self, pos: FilePos) -> usize {
+        match self.line_start_offsets.binary_search(&pos.idx) {
+            Ok(line_idx) => line_idx,
+            // This is the index of where we'd have to insert a our element to
+            // preserve order. If we're on line zero, the situation would look
+            // like this...
+            //
+            // ```
+            // line_start_offsets:
+            // 0 10 ...
+            //   ^ 4 needs to be inserted here!
+            // ```
+            //
+            // Hence, we need to subtract one from this index to get the index
+            // of the line we're on.
+            Err(insert_line_idx) => insert_line_idx - 1,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
+pub struct FilePos {
+    pub idx: usize,
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct LineAndColumn {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl fmt::Display for LineAndColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.line + 1, self.column + 1)
     }
 }
 
@@ -27,6 +108,14 @@ pub struct FileLoc {
 }
 
 impl FileLoc {
+    pub fn file(&self) -> Obj<FileData> {
+        self.file.obj()
+    }
+
+    pub fn file_ref(&self) -> ObjRef<FileData> {
+        self.file.get()
+    }
+
     pub fn as_span(self) -> Span {
         Span {
             file: self.file,
@@ -34,11 +123,31 @@ impl FileLoc {
             end_excl: self.pos,
         }
     }
-}
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialOrd, Ord, PartialEq)]
-pub struct FilePos {
-    pub char_index: u32,
+    pub fn with_pos(self, pos: FilePos) -> Self {
+        Self {
+            file: self.file,
+            pos,
+        }
+    }
+
+    pub fn line(self) -> usize {
+        self.file_ref().line_of_pos(self.pos)
+    }
+
+    pub fn line_and_column(self) -> LineAndColumn {
+        let file = self.file_ref();
+        let line = file.line_of_pos(self.pos);
+        let line_start = file.line_start(line);
+        let column = self.pos.idx - line_start.pos.idx;
+
+        LineAndColumn { line, column }
+    }
+
+    pub fn line_start(self) -> FileLoc {
+        let file = self.file_ref();
+        file.line_start(file.line_of_pos(self.pos))
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -78,21 +187,70 @@ impl Span {
     }
 }
 
+// === NormalizedStrIterator === //
+
+#[derive(Debug, Clone)]
+pub struct NormalizedStrIterator<'a> {
+    pub iter: std::str::CharIndices<'a>,
+    // Needed until `CharIndices::offset` stabilizes.
+    pub eof_idx: usize,
+}
+
+impl<'a> NormalizedStrIterator<'a> {
+    pub fn new(str: &'a str) -> Self {
+        Self {
+            iter: str.char_indices(),
+            eof_idx: str.len(),
+        }
+    }
+
+    pub fn next_pos(&self) -> usize {
+        match self.peek() {
+            Some((idx, _)) => idx,
+            None => self.eof_idx,
+        }
+    }
+}
+
+impl Iterator for NormalizedStrIterator<'_> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = self.iter.next();
+
+        // If we have a carriage return, interpret it as a newline.
+        if let Some((first_idx, '\r')) = first {
+            // Consume a whole CRLF if we can.
+            let second_idx = self.lookahead(|c| match c.next() {
+                Some((second_idx, '\n')) => Some(second_idx),
+                _ => None,
+            });
+
+            // But always interpret it as a newline.
+            return Some((second_idx.unwrap_or(first_idx), '\n'));
+        }
+
+        first
+    }
+}
+
+impl ForkableCursor for NormalizedStrIterator<'_> {}
+
 // === FileCursor === //
 
 pub type FileSequence<'a> = ParseSequence<'a, FileCursor<'a>>;
 
 #[derive(Debug, Clone)]
 pub struct FileCursor<'a> {
-    pub remaining: std::str::Chars<'a>,
-    pub loc: FileLoc,
+    pub file: Entity,
+    pub iter: NormalizedStrIterator<'a>,
 }
 
 impl<'a> FileCursor<'a> {
     pub fn new(file: &'a FileData) -> Self {
         Self {
-            remaining: file.data.chars(),
-            loc: file.start_loc(),
+            file: file.me,
+            iter: NormalizedStrIterator::new(&file.data),
         }
     }
 }
@@ -101,27 +259,22 @@ impl Iterator for FileCursor<'_> {
     type Item = char;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let first = self.remaining.next();
-
-        if first.is_some() {
-            self.loc.pos.char_index += 1;
-        }
-
-        // If we have a carriage return, interpret it as a newline.
-        if first == Some('\r') {
-            // Consume a whole CRLF if we can.
-            self.lookahead(|c| c.next() == Some('\n'));
-
-            // But always interpret it as a newline.
-            return Some('\n');
-        }
-
-        first
+        self.iter.next().map(|(_, ch)| ch)
     }
 }
 
+impl ForkableCursor for FileCursor<'_> {}
+
 impl ParseCursor for FileCursor<'_> {
     fn next_span(&self) -> Span {
-        self.loc.as_span()
+        let pos = FilePos {
+            idx: self.iter.next_pos(),
+        };
+
+        Span {
+            file: self.file,
+            start: pos,
+            end_excl: pos,
+        }
     }
 }

@@ -15,11 +15,7 @@ fn main() -> anyhow::Result<()> {
 
     // Construct core services
     let diag = StrongObj::<DiagnosticReporter>::default();
-    let file = StrongEntity::new().with_cyclic(|me, _| FileData {
-        me,
-        human_path: in_path,
-        data: in_data,
-    });
+    let file = StrongEntity::new().with_cyclic(FileData::new(in_path, in_data));
 
     // Tokenize source
     let tokens = tokenize(diag.downgrade(), &file.get::<FileData>());

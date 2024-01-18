@@ -150,7 +150,10 @@ impl<'cx, I> ParseSequence<'cx, I> {
 
         expectations.sort_unstable();
 
-        if let Some(last) = (expectations.len() > 1).then(|| expectations.last_mut()).flatten() {
+        if let Some(last) = (expectations.len() > 1)
+            .then(|| expectations.last_mut())
+            .flatten()
+        {
             last.insert_str(0, "or ");
         }
         let expectations = expectations.join(", ");
@@ -165,7 +168,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
                     stack
                         .iter()
                         .rev()
-                        .map(|(loc, what)| format!("{what} starting at {loc:?}"))
+                        .map(|(loc, what)| format!("{what} starting at {}", loc.line_and_column()))
                         .collect::<Vec<_>>()
                         .join(" in ")
                 )
@@ -212,7 +215,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
 
 // === ParseCursor === //
 
-pub trait ParseCursor: Iterator + Clone {
+pub trait ForkableCursor: Iterator + Clone {
     fn peek(&self) -> Option<Self::Item> {
         self.clone().next()
     }
@@ -226,6 +229,8 @@ pub trait ParseCursor: Iterator + Clone {
 
         res
     }
+}
 
+pub trait ParseCursor: ForkableCursor {
     fn next_span(&self) -> Span;
 }

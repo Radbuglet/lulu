@@ -6,7 +6,7 @@ use std::fmt;
 use crate::util::{
     diag::{Diagnostic, DiagnosticReporter},
     intern::{intern, Intern},
-    parser::{ParseContext, ParseCursor},
+    parser::{ForkableCursor, ParseContext},
     span::{FileCursor, FileData, FileLoc, FileSequence, Span},
 };
 
