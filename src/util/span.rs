@@ -140,11 +140,23 @@ impl FileLoc {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct Span {
     pub file: Entity,
     pub start: FileOffset,
     pub end_excl: FileOffset,
+}
+
+impl fmt::Debug for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}-{}",
+            self.file_ref().human_path,
+            self.start().line_and_column(),
+            self.end().line_and_column(),
+        )
+    }
 }
 
 impl Span {
@@ -160,6 +172,14 @@ impl Span {
             start,
             end_excl: end,
         }
+    }
+
+    pub fn file(&self) -> Obj<FileData> {
+        self.file.obj()
+    }
+
+    pub fn file_ref(&self) -> ObjRef<FileData> {
+        self.file.get()
     }
 
     pub fn start(&self) -> FileLoc {

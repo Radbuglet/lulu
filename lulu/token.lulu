@@ -7,5 +7,5 @@ fn main() {
     let foo = "whee\n\
               |woo \
               |whe\t";
-    let bar = '\n';
+    let bar = '\u{_AF}';
 }

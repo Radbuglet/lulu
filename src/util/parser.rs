@@ -159,6 +159,16 @@ impl<'cx, I> ParseSequence<'cx, I> {
         self.stuck_hints.push(reason.into());
     }
 
+    pub fn stuck_lookahead<R>(&mut self, recover: impl FnOnce(&mut I) -> R)
+    where
+        I: ParseCursor,
+        R: LookaheadResult,
+    {
+        self.stuck(|c| {
+            c.lookahead(recover);
+        });
+    }
+
     pub fn stuck(&mut self, recover: impl FnOnce(&mut I))
     where
         I: ParseCursor,
@@ -221,6 +231,9 @@ impl<'cx, I> ParseSequence<'cx, I> {
 
         // Attempt to get unstuck
         recover(&mut self.cursor);
+
+        // Clear expectation set
+        self.moved_forward();
     }
 
     pub fn error(&mut self, diagnostic: impl Into<Diagnostic>, recover: impl FnOnce(&mut I)) {

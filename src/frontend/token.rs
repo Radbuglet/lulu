@@ -4,7 +4,7 @@ use unicode_xid::UnicodeXID;
 use std::fmt;
 
 use crate::util::{
-    diag::{Diagnostic, DiagnosticReporter},
+    diag::{Diagnostic, DiagnosticKind, DiagnosticReporter},
     intern::{intern, Intern},
     parser::{ForkableCursor, ParseContext},
     span::{FileCursor, FileData, FileLoc, FileSequence, Span},
@@ -252,27 +252,33 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
         // Match closing delimiters
         if let Some(close_delimiter) = parse_close_delimiter(c) {
             if delimiter != close_delimiter {
-                if close_delimiter == GroupDelimiter::File {
-                    c.error(
-                        Diagnostic::span_err(
-                            next_span,
-                            format!("unclosed delimiter; expected {}", delimiter.closer()),
-                        ),
-                        |_| (), // Already caught up
-                    );
+                let prefix = if close_delimiter == GroupDelimiter::File {
+                    "unclosed delimiter"
                 } else {
-                    c.error(
-                        Diagnostic::span_err(
+                    "mismatched delimiter"
+                };
+
+                c.error(
+                    {
+                        let mut diagnostic = Diagnostic::span_err(
                             next_span,
-                            format!(
-                                "mismatched delimiter; expected {}, found {}",
-                                delimiter.closer(),
-                                close_delimiter.closer()
-                            ),
-                        ),
-                        |_| (), // Already caught up
-                    );
-                }
+                            format!("{prefix}; expected {}", delimiter.closer()),
+                        );
+
+                        if delimiter != GroupDelimiter::File {
+                            diagnostic.subs.push(
+                                Diagnostic::new(
+                                    DiagnosticKind::Info,
+                                    "looking for match to this delimiter",
+                                )
+                                .with_offending_span(open_span),
+                            );
+                        }
+
+                        diagnostic
+                    },
+                    |_| (), // Already caught up
+                );
             }
 
             break;
@@ -485,6 +491,8 @@ fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
         return None;
     }
 
+    let _wp = c.while_parsing(intern!("character literal"));
+
     // Match inner character
     let ch = 'parse: {
         // Match character escape
@@ -611,23 +619,71 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     if c.expect(intern!("`u`"), |c| c.next() == Some('u')) {
         let _wp = c.while_parsing(intern!("Unicode escape sequence"));
 
-        // TODO
-        c.error(
-            Diagnostic::span_err(
-                esc_start.until(c.next_span()),
-                "Unicode escape sequences are not yet supported",
-            ),
-            |_| (),
-        );
-        return None;
+        // Match opening brace
+        if !c.expect(intern!("`{`"), |c| c.next() == Some('{')) {
+            c.stuck(|_| ());
+            return None;
+        }
+
+        // Match digits
+        let mut digits = String::new();
+        while digits.len() < 6 {
+            // Match a hexadecimal digit
+            if let Some(digit) = c.expect(intern!("hexadecimal digit"), |c| {
+                c.next().filter(char::is_ascii_hexdigit)
+            }) {
+                digits.push(digit);
+                continue;
+            }
+
+            // Match an underscore
+            if c.expect(intern!("`_`"), |c| c.next() == Some('_')) {
+                continue;
+            }
+
+            break;
+        }
+
+        // If we have an insufficient number of digits or fail to match a closing `}`, we're stuck.
+        if digits.is_empty() || !c.expect(intern!("`}`"), |c| c.next() == Some('}')) {
+            c.hint_stuck_if_passes("expected at least 1 hexadecimal digit", |c| {
+                c.next() == Some('}')
+            });
+
+            c.hint_stuck_if_passes("expected at most 6 hexadecimal digits", |c| {
+                c.next().is_some_and(|c| c.is_ascii_hexdigit() || c == '_')
+            });
+
+            c.stuck_lookahead(|c| loop {
+                match c.next() {
+                    Some('}') => break true,
+                    Some('\n') | None => break false,
+                    _ => continue,
+                }
+            });
+            return None;
+        }
+
+        // Parse hex-code
+        let code = u32::from_str_radix(&digits, 16).unwrap();
+
+        // Validate code
+        let Some(ch) = char::from_u32(code) else {
+            c.error(
+                Diagnostic::span_err(
+                    esc_start.until(c.next_span()),
+                    format!("unicode escape {digits:?} is invalid"),
+                ),
+                |_| (),
+            );
+            return None;
+        };
+
+        return Some(ch);
     }
 
     // Otherwise, we're stuck.
-    c.stuck(|c| {
-        while c.peek().is_some_and(|v| !v.is_whitespace() && v != '"') {
-            let _ = c.next();
-        }
-    });
+    c.stuck(|_| ());
 
     None
 }
