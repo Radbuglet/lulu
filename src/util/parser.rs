@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    fmt,
     thread::panicking,
 };
 
@@ -7,7 +8,7 @@ use aunty::Obj;
 use rustc_hash::FxHashSet;
 
 use super::{
-    diag::{Diagnostic, DiagnosticReporter},
+    diag::{Diagnostic, DiagnosticKind, DiagnosticReporter},
     intern::Intern,
     span::{FileLoc, Span},
 };
@@ -59,6 +60,7 @@ impl ParseContext {
             cx: self,
             cursor,
             expectations: Vec::new(),
+            stuck_hints: Vec::new(),
         }
     }
 
@@ -101,6 +103,7 @@ pub struct ParseSequence<'cx, I> {
     cx: &'cx ParseContext,
     cursor: I,
     expectations: Vec<Intern>,
+    stuck_hints: Vec<String>,
 }
 
 impl<'cx, I> ParseSequence<'cx, I> {
@@ -112,24 +115,48 @@ impl<'cx, I> ParseSequence<'cx, I> {
     where
         I: ParseCursor,
     {
-        self.cx.while_parsing(self.next_loc(), what)
+        self.cx.while_parsing(self.next_span().start(), what)
     }
 
-    pub fn expect<R: LookaheadResult>(
-        &mut self,
-        expectation: Intern,
-        f: impl FnOnce(&mut I) -> R,
-    ) -> R
+    fn moved_forward(&mut self) {
+        self.expectations.clear();
+        self.stuck_hints.clear();
+    }
+
+    pub fn irrefutable<R>(&mut self, f: impl FnOnce(&mut I) -> R) -> R {
+        self.moved_forward();
+        f(&mut self.cursor)
+    }
+
+    pub fn expect<R>(&mut self, expectation: Intern, f: impl FnOnce(&mut I) -> R) -> R
     where
         I: ParseCursor,
+        R: LookaheadResult,
     {
         let res = self.cursor.lookahead(f);
         if res.is_truthy() {
-            self.expectations.clear();
+            self.moved_forward();
         } else {
             self.expectations.push(expectation);
         }
         res
+    }
+
+    pub fn hint_stuck_if_passes<R>(
+        &mut self,
+        reason: impl fmt::Display,
+        f: impl FnOnce(&mut I) -> R,
+    ) where
+        I: ParseCursor,
+        R: LookaheadResult,
+    {
+        if f(&mut self.cursor.clone()).is_truthy() {
+            self.hint_stuck(reason.to_string());
+        }
+    }
+
+    pub fn hint_stuck(&mut self, reason: impl Into<String>) {
+        self.stuck_hints.push(reason.into());
     }
 
     pub fn stuck(&mut self, recover: impl FnOnce(&mut I))
@@ -149,6 +176,10 @@ impl<'cx, I> ParseSequence<'cx, I> {
             .collect::<Vec<_>>();
 
         expectations.sort_unstable();
+
+        if expectations.is_empty() {
+            expectations.push("<nothing?>".to_string());
+        }
 
         if let Some(last) = (expectations.len() > 1)
             .then(|| expectations.last_mut())
@@ -175,10 +206,18 @@ impl<'cx, I> ParseSequence<'cx, I> {
             }
         };
 
-        self.diagnostics().report(Diagnostic::span_err(
-            span,
-            format!("expected {expectations}{while_parsing}"),
-        ));
+        self.diagnostics().report({
+            let mut diagnostic =
+                Diagnostic::span_err(span, format!("expected {expectations}{while_parsing}"));
+
+            for hint in &self.stuck_hints {
+                diagnostic
+                    .subs
+                    .push(Diagnostic::new(DiagnosticKind::Note, hint.clone()));
+            }
+
+            diagnostic
+        });
 
         // Attempt to get unstuck
         recover(&mut self.cursor);
@@ -195,13 +234,6 @@ impl<'cx, I> ParseSequence<'cx, I> {
         I: ParseCursor,
     {
         self.cursor.next_span()
-    }
-
-    pub fn next_loc(&self) -> FileLoc
-    where
-        I: ParseCursor,
-    {
-        self.next_span().start()
     }
 
     pub fn context(&self) -> &'cx ParseContext {

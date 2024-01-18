@@ -42,14 +42,24 @@ impl FileData {
     pub fn start_loc(&self) -> FileLoc {
         FileLoc {
             file: self.me,
-            pos: FilePos { idx: 0 },
+            pos: FileOffset { idx: 0 },
         }
     }
 
     pub fn end_loc(&self) -> FileLoc {
         FileLoc {
             file: self.me,
-            pos: FilePos {
+            pos: FileOffset {
+                idx: self.data.len(),
+            },
+        }
+    }
+
+    pub fn file_span(&self) -> Span {
+        Span {
+            file: self.me,
+            start: FileOffset { idx: 0 },
+            end_excl: FileOffset {
                 idx: self.data.len(),
             },
         }
@@ -58,13 +68,13 @@ impl FileData {
     pub fn line_start(&self, idx: usize) -> FileLoc {
         FileLoc {
             file: self.me,
-            pos: FilePos {
+            pos: FileOffset {
                 idx: self.line_start_offsets[idx],
             },
         }
     }
 
-    fn line_of_pos(&self, pos: FilePos) -> usize {
+    fn line_of_pos(&self, pos: FileOffset) -> usize {
         match self.line_start_offsets.binary_search(&pos.idx) {
             Ok(line_idx) => line_idx,
             // This is the index of where we'd have to insert a our element to
@@ -85,26 +95,14 @@ impl FileData {
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
-pub struct FilePos {
+pub struct FileOffset {
     pub idx: usize,
-}
-
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub struct LineAndColumn {
-    pub line: usize,
-    pub column: usize,
-}
-
-impl fmt::Display for LineAndColumn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.line + 1, self.column + 1)
-    }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct FileLoc {
     pub file: Entity,
-    pub pos: FilePos,
+    pub pos: FileOffset,
 }
 
 impl FileLoc {
@@ -116,15 +114,7 @@ impl FileLoc {
         self.file.get()
     }
 
-    pub fn as_span(self) -> Span {
-        Span {
-            file: self.file,
-            start: self.pos,
-            end_excl: self.pos,
-        }
-    }
-
-    pub fn with_pos(self, pos: FilePos) -> Self {
+    pub fn with_pos(self, pos: FileOffset) -> Self {
         Self {
             file: self.file,
             pos,
@@ -153,8 +143,8 @@ impl FileLoc {
 #[derive(Debug, Copy, Clone)]
 pub struct Span {
     pub file: Entity,
-    pub start: FilePos,
-    pub end_excl: FilePos,
+    pub start: FileOffset,
+    pub end_excl: FileOffset,
 }
 
 impl Span {
@@ -184,6 +174,30 @@ impl Span {
             file: self.file,
             pos: self.end_excl,
         }
+    }
+
+    pub fn to(self, other: Self) -> Self {
+        Self::new(self.start(), other.end())
+    }
+
+    pub fn between(self, other: Self) -> Self {
+        Self::new(self.end(), other.start())
+    }
+
+    pub fn until(self, other: Self) -> Self {
+        Self::new(self.start(), other.start())
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct LineAndColumn {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl fmt::Display for LineAndColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.line + 1, self.column + 1)
     }
 }
 
@@ -253,6 +267,13 @@ impl<'a> FileCursor<'a> {
             iter: NormalizedStrIterator::new(&file.data),
         }
     }
+
+    pub fn new_spanned(file: &'a FileData, span: Span) -> Self {
+        Self {
+            file: file.me,
+            iter: NormalizedStrIterator::new(&file.data[span.start.idx..span.end_excl.idx]),
+        }
+    }
 }
 
 impl Iterator for FileCursor<'_> {
@@ -267,14 +288,15 @@ impl ForkableCursor for FileCursor<'_> {}
 
 impl ParseCursor for FileCursor<'_> {
     fn next_span(&self) -> Span {
-        let pos = FilePos {
-            idx: self.iter.next_pos(),
-        };
+        let mut fork = self.iter.clone();
+        let first_pos = fork.next_pos();
+        let _ = fork.next();
+        let second_pos = fork.next_pos();
 
         Span {
             file: self.file,
-            start: pos,
-            end_excl: pos,
+            start: FileOffset { idx: first_pos },
+            end_excl: FileOffset { idx: second_pos },
         }
     }
 }

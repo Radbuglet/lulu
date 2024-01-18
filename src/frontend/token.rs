@@ -205,25 +205,27 @@ pub(crate) use punct;
 
 pub fn tokenize(diag: Obj<DiagnosticReporter>, file: &FileData) -> TokenGroup {
     let cx = ParseContext::new(diag);
-
-    parse_group(
-        &mut cx.enter(FileCursor::new(file)),
-        file.start_loc(),
-        GroupDelimiter::File,
-    )
+    {
+        let mut c = cx.enter(FileCursor::new(file));
+        let open_span = c.next_span();
+        parse_group(&mut c, open_span, GroupDelimiter::File)
+    }
 }
 
-fn parse_group(c: &mut FileSequence, open_loc: FileLoc, delimiter: GroupDelimiter) -> TokenGroup {
+fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter) -> TokenGroup {
     let mut tokens = Vec::new();
-    let _wp = c.while_parsing(match delimiter {
-        GroupDelimiter::Brace => intern!("braced token group"),
-        GroupDelimiter::Bracket => intern!("bracketed token group"),
-        GroupDelimiter::Paren => intern!("parenthesized token group"),
-        GroupDelimiter::File => intern!("file-spanning token group"),
-    });
+
+    let _wp = 'wp_ctor: {
+        Some(c.while_parsing(match delimiter {
+            GroupDelimiter::Brace => intern!("braced token group"),
+            GroupDelimiter::Bracket => intern!("bracketed token group"),
+            GroupDelimiter::Paren => intern!("parenthesized token group"),
+            GroupDelimiter::File => break 'wp_ctor None,
+        }))
+    };
 
     loop {
-        let next_loc = c.next_loc();
+        let next_span = c.next_span();
 
         // Match whitespace
         if c.expect(intern!("whitespace"), |c| {
@@ -232,9 +234,18 @@ fn parse_group(c: &mut FileSequence, open_loc: FileLoc, delimiter: GroupDelimite
             continue;
         }
 
+        // Match comments
+        if parse_line_comment(c) {
+            continue;
+        }
+
+        if parse_block_comment(c) {
+            continue;
+        }
+
         // Match opening delimiters
         if let Some(delimiter) = parse_open_delimiter(c) {
-            tokens.push(parse_group(c, next_loc, delimiter).into());
+            tokens.push(parse_group(c, next_span, delimiter).into());
             continue;
         }
 
@@ -244,7 +255,7 @@ fn parse_group(c: &mut FileSequence, open_loc: FileLoc, delimiter: GroupDelimite
                 if close_delimiter == GroupDelimiter::File {
                     c.error(
                         Diagnostic::span_err(
-                            next_loc.as_span(),
+                            next_span,
                             format!("unclosed delimiter; expected {}", delimiter.closer()),
                         ),
                         |_| (), // Already caught up
@@ -252,7 +263,7 @@ fn parse_group(c: &mut FileSequence, open_loc: FileLoc, delimiter: GroupDelimite
                 } else {
                     c.error(
                         Diagnostic::span_err(
-                            next_loc.as_span(),
+                            next_span,
                             format!(
                                 "mismatched delimiter; expected {}, found {}",
                                 delimiter.closer(),
@@ -289,7 +300,7 @@ fn parse_group(c: &mut FileSequence, open_loc: FileLoc, delimiter: GroupDelimite
         if let Some(char) = parse_punct_char(c) {
             tokens.push(
                 TokenPunct {
-                    loc: next_loc,
+                    loc: next_span.start(),
                     char,
                 }
                 .into(),
@@ -305,10 +316,58 @@ fn parse_group(c: &mut FileSequence, open_loc: FileLoc, delimiter: GroupDelimite
     }
 
     TokenGroup {
-        span: Span::new(open_loc, c.next_loc()),
+        span: open_span.until(c.next_span()),
         delimiter,
         tokens,
     }
+}
+
+fn parse_line_comment(c: &mut FileSequence) -> bool {
+    if !c.expect(intern!("`//`"), |c| {
+        c.next() == Some('/') && c.next() == Some('/')
+    }) {
+        return false;
+    }
+
+    loop {
+        let read = c.irrefutable(|c| c.next());
+        if read.is_none() || read == Some('\n') {
+            break;
+        }
+    }
+
+    true
+}
+
+fn parse_block_comment(c: &mut FileSequence) -> bool {
+    if !c.expect(intern!("`/*`"), |c| {
+        c.next() == Some('/') && c.next() == Some('*')
+    }) {
+        return false;
+    }
+
+    let _wp = c.while_parsing(intern!("block comment"));
+
+    loop {
+        if c.expect(intern!("`*/`"), |c| {
+            c.next() == Some('*') && c.next() == Some('/')
+        }) {
+            break;
+        }
+
+        if parse_block_comment(c) {
+            continue;
+        }
+
+        if c.expect(intern!("comment character"), |c| c.next().is_some()) {
+            continue;
+        }
+
+        c.stuck(|_| ()); // Already recovered.
+        break;
+    }
+
+    true
 }
 
 fn parse_open_delimiter(c: &mut FileSequence) -> Option<GroupDelimiter> {
@@ -354,7 +413,7 @@ fn parse_punct_char(c: &mut FileSequence) -> Option<PunctChar> {
 }
 
 fn parse_ident(c: &mut FileSequence) -> Option<TokenIdent> {
-    let start = c.next_loc();
+    let start = c.next_span();
     let mut builder = String::new();
 
     // Match first character
@@ -370,13 +429,13 @@ fn parse_ident(c: &mut FileSequence) -> Option<TokenIdent> {
     }
 
     Some(TokenIdent {
-        span: Span::new(start, c.next_loc()),
+        span: start.until(c.next_span()),
         text: Intern::new(builder),
     })
 }
 
 fn parse_string_literal(c: &mut FileSequence) -> Option<TokenStringLit> {
-    let start_loc = c.next_loc();
+    let start = c.next_span();
     let _wp = c.while_parsing(intern!("string literal"));
 
     // Match opening quote
@@ -413,13 +472,13 @@ fn parse_string_literal(c: &mut FileSequence) -> Option<TokenStringLit> {
     }
 
     Some(TokenStringLit {
-        span: Span::new(start_loc, c.next_loc()),
+        span: start.until(c.next_span()),
         inner: Intern::new(builder),
     })
 }
 
 fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
-    let start_loc = c.next_loc();
+    let start = c.next_span();
 
     // Match opening quote
     if !c.expect(intern!("`'`"), |c| c.next() == Some('\'')) {
@@ -433,15 +492,28 @@ fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
             break 'parse parse_char_escape(c, false);
         }
 
-        // Match anything but the EOF or a closing quote
+        // Match anything but an EOF, a newline, or a closing quote
         if let Some(char) = c.expect(intern!("string character"), |c| {
-            c.next().filter(|c| *c != '\'')
+            c.next().filter(|&c| c != '\'' && c != '\n')
         }) {
             break 'parse Some(char);
         }
 
+        c.hint_stuck_if_passes("try escaping the `'` character using `\\'`", |c| {
+            c.next() == Some('\'')
+        });
+
+        c.hint_stuck_if_passes(
+            "newlines must be written using their escape sequence `\\n`",
+            |c| c.next() == Some('\n'),
+        );
+
         // Otherwise, we got stuck.
-        c.stuck(|_| ());
+        c.stuck(|c| {
+            if c.peek() == Some('\'') {
+                let _ = c.next();
+            }
+        });
         None
     };
 
@@ -454,25 +526,32 @@ fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
     }
 
     Some(TokenCharLit {
-        span: Span::new(start_loc, c.next_loc()),
+        span: start.until(c.next_span()),
         ch: ch.unwrap_or('\0'),
     })
 }
 
 fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char> {
+    let esc_start = c.next_span();
     let _wp = c.while_parsing(intern!("character escape code"));
 
     // Match multiline escape
-    if allow_multiline && c.expect(intern!("newline"), |c| c.next() == Some('\n')) {
-        // Match leading whitespace
-        while c.expect(intern!("escaped space"), |c| {
-            c.next().is_some_and(|c| c.is_whitespace())
-        }) {}
+    if allow_multiline {
+        if c.expect(intern!("newline"), |c| c.next() == Some('\n')) {
+            // Match leading whitespace
+            while c.expect(intern!("escaped space"), |c| {
+                c.next().is_some_and(|c| c.is_whitespace())
+            }) {}
 
-        // Match pipe
-        let _ = c.expect(intern!("|"), |c| c.next() == Some('|'));
+            // Match pipe
+            let _ = c.expect(intern!("|"), |c| c.next() == Some('|'));
 
-        return None;
+            return None;
+        }
+    } else {
+        c.hint_stuck_if_passes("you can only escape newlines in string literals", |c| {
+            c.next() == Some('\n')
+        });
     }
 
     // Match simple escapes
@@ -495,7 +574,7 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     // Match ASCII code escapes
     if c.expect(intern!("`x`"), |c| c.next() == Some('x')) {
         let _wp = c.while_parsing(intern!("ASCII escape code"));
-        let hex_start = c.next_loc();
+        let hex_start = c.next_span();
 
         let Some((a, b)) = c.expect(intern!("two hexadecimal digits"), |c| {
             match (c.next(), c.next()) {
@@ -517,7 +596,7 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
         if hex > 0x7F {
             c.error(
                 Diagnostic::span_err(
-                    Span::new(hex_start, c.next_loc()),
+                    hex_start.until(c.next_span()),
                     "invalid ASCII escape code (must be 0x7F or less)",
                 ),
                 |_| (),
@@ -529,7 +608,19 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     }
 
     // Match Unicode escapes
-    // TODO
+    if c.expect(intern!("`u`"), |c| c.next() == Some('u')) {
+        let _wp = c.while_parsing(intern!("Unicode escape sequence"));
+
+        // TODO
+        c.error(
+            Diagnostic::span_err(
+                esc_start.until(c.next_span()),
+                "Unicode escape sequences are not yet supported",
+            ),
+            |_| (),
+        );
+        return None;
+    }
 
     // Otherwise, we're stuck.
     c.stuck(|c| {
