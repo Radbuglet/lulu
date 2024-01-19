@@ -1,6 +1,6 @@
 use core::fmt;
 
-use aunty::{CyclicCtor, Entity, Obj, ObjRef};
+use aunty::{CyclicCtor, EntityWith, Obj, ObjRef};
 
 use super::parser::{ForkableCursor, ParseCursor, ParseSequence};
 
@@ -8,7 +8,7 @@ use super::parser::{ForkableCursor, ParseCursor, ParseSequence};
 
 #[derive(Debug)]
 pub struct FileData {
-    pub me: Entity,
+    pub me: EntityWith<Self>,
     pub human_path: String,
     pub data: String,
     pub line_start_offsets: Vec<usize>,
@@ -31,7 +31,7 @@ impl FileData {
             }
 
             Self {
-                me,
+                me: me.typed(),
                 human_path: path,
                 data,
                 line_start_offsets,
@@ -101,7 +101,7 @@ pub struct FileOffset {
 
 #[derive(Copy, Clone)]
 pub struct FileLoc {
-    pub file: Entity,
+    pub file: EntityWith<FileData>,
     pub pos: FileOffset,
 }
 
@@ -153,7 +153,7 @@ impl fmt::Debug for FileLoc {
 
 #[derive(Copy, Clone)]
 pub struct Span {
-    pub file: Entity,
+    pub file: EntityWith<FileData>,
     pub start: FileOffset,
     pub end_excl: FileOffset,
 }
@@ -287,7 +287,7 @@ pub type FileSequence<'a> = ParseSequence<'a, FileCursor<'a>>;
 
 #[derive(Debug, Clone)]
 pub struct FileCursor<'a> {
-    pub file: Entity,
+    pub file: EntityWith<FileData>,
     pub iter: NormalizedStrIterator<'a>,
 }
 

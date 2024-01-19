@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
-aunty = { git = "https://github.com/Radbuglet/aunty.git", version = "0.1.0" }
+aunty = { git = "https://github.com/Radbuglet/aunty.git", rev = "8f5254fd976e05b0e896a605b9a9a3750cd1f1ef" }
 color-backtrace = "0.6.1"
 colored = "2.1.0"
 env_logger = "0.10.1"

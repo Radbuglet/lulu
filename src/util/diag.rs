@@ -55,6 +55,8 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    // === Constructors === //
+
     pub fn new(kind: DiagnosticKind, message: impl Into<String>) -> Self {
         Self {
             kind,
@@ -66,9 +68,49 @@ impl Diagnostic {
         }
     }
 
+    // Span
     pub fn span_err(span: Span, message: impl Into<String>) -> Self {
-        Self::new(DiagnosticKind::Error, message).with_offending_span(span)
+        Self::new_err(message).with_offending_span(span)
     }
+
+    pub fn span_warn(span: Span, message: impl Into<String>) -> Self {
+        Self::new_warn(message).with_offending_span(span)
+    }
+
+    pub fn span_info(span: Span, message: impl Into<String>) -> Self {
+        Self::new_info(message).with_offending_span(span)
+    }
+
+    pub fn span_note(span: Span, message: impl Into<String>) -> Self {
+        Self::new_note(message).with_offending_span(span)
+    }
+
+    pub fn span_help(span: Span, message: impl Into<String>) -> Self {
+        Self::new_help(message).with_offending_span(span)
+    }
+
+    // Un-spanned
+    pub fn new_err(message: impl Into<String>) -> Self {
+        Self::new(DiagnosticKind::Error, message)
+    }
+
+    pub fn new_warn(message: impl Into<String>) -> Self {
+        Self::new(DiagnosticKind::Warn, message)
+    }
+
+    pub fn new_info(message: impl Into<String>) -> Self {
+        Self::new(DiagnosticKind::Info, message)
+    }
+
+    pub fn new_note(message: impl Into<String>) -> Self {
+        Self::new(DiagnosticKind::Note, message)
+    }
+
+    pub fn new_help(message: impl Into<String>) -> Self {
+        Self::new(DiagnosticKind::Help, message)
+    }
+
+    // === Builder === //
 
     pub fn with_offending_span(mut self, span: Span) -> Self {
         self.offending_span = Some(span);

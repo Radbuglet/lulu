@@ -8,7 +8,7 @@ use aunty::Obj;
 use rustc_hash::FxHashSet;
 
 use super::{
-    diag::{Diagnostic, DiagnosticKind, DiagnosticReporter},
+    diag::{Diagnostic, DiagnosticReporter},
     intern::Intern,
     span::{FileLoc, Span},
 };
@@ -221,9 +221,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
                 Diagnostic::span_err(span, format!("expected {expectations}{while_parsing}"));
 
             for hint in &self.stuck_hints {
-                diagnostic
-                    .subs
-                    .push(Diagnostic::new(DiagnosticKind::Note, hint.clone()));
+                diagnostic.subs.push(Diagnostic::new_note(hint.clone()));
             }
 
             diagnostic

@@ -4,7 +4,7 @@ use unicode_xid::UnicodeXID;
 use std::fmt;
 
 use crate::util::{
-    diag::{Diagnostic, DiagnosticKind, DiagnosticReporter},
+    diag::{Diagnostic, DiagnosticReporter},
     intern::{intern, Intern},
     parser::{ForkableCursor, ParseContext},
     span::{FileCursor, FileData, FileLoc, FileSequence, Span},
@@ -267,13 +267,10 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
                         );
 
                         if delimiter != GroupDelimiter::File {
-                            diagnostic.subs.push(
-                                Diagnostic::new(
-                                    DiagnosticKind::Info,
-                                    "looking for match to this delimiter",
-                                )
-                                .with_offending_span(open_span),
-                            );
+                            diagnostic.subs.push(Diagnostic::span_info(
+                                open_span,
+                                "looking for match to this delimiter",
+                            ));
                         }
 
                         diagnostic
