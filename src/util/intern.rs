@@ -193,11 +193,7 @@ impl Intern {
 
 impl fmt::Debug for Intern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Intern")
-            .field("interner", &self.interner)
-            .field("index", &self.index)
-            .field("text", &self.interner_ref().decode(*self))
-            .finish()
+        self.interner_ref().decode(*self).fmt(f)
     }
 }
 

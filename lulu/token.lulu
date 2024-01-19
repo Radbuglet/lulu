@@ -3,9 +3,11 @@
 
 /// This is a markdown doc-comment!
 /// Yes, Lulu supports these as well!
-fn main() {
+fn main(args: string[]) {
     let foo = "whee\n\
               |woo \
               |whe\t";
     let bar = '\u{_AF}';
+	/*let baz = (4.3e+3f32, 0xF_F2);*/
+	let @foo = "bar" @ baz;
 }

@@ -8,6 +8,7 @@ use lulu::{
 fn main() -> anyhow::Result<()> {
     // Install services
     color_backtrace::install();
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     // Read source files
     let in_path = std::env::args().nth(1).context("missing file argument")?;

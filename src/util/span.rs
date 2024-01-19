@@ -99,7 +99,7 @@ pub struct FileOffset {
     pub idx: usize,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct FileLoc {
     pub file: Entity,
     pub pos: FileOffset,
@@ -137,6 +137,17 @@ impl FileLoc {
     pub fn line_start(self) -> FileLoc {
         let file = self.file_ref();
         file.line_start(file.line_of_pos(self.pos))
+    }
+}
+
+impl fmt::Debug for FileLoc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}",
+            self.file_ref().human_path,
+            self.line_and_column(),
+        )
     }
 }
 

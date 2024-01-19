@@ -97,6 +97,7 @@ pub struct TokenCharLit {
 pub struct TokenIdent {
     pub span: Span,
     pub text: Intern,
+    pub is_raw: bool,
 }
 
 // Puncts
@@ -296,8 +297,27 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
             continue;
         }
 
+        // Match raw identifier or punctuation
+        if c.expect(intern!("`@`"), |c| c.next() == Some('@')) {
+            // Match as raw identifier
+            if let Some(ident) = parse_ident(c, true) {
+                tokens.push(ident.into());
+                continue;
+            }
+
+            // Otherwise, treat as punctuation.
+            tokens.push(
+                TokenPunct {
+                    loc: next_span.start(),
+                    char: punct!('@'),
+                }
+                .into(),
+            );
+            continue;
+        }
+
         // Match ident
-        if let Some(ident) = parse_ident(c) {
+        if let Some(ident) = parse_ident(c, false) {
             tokens.push(ident.into());
             continue;
         }
@@ -418,7 +438,7 @@ fn parse_punct_char(c: &mut FileSequence) -> Option<PunctChar> {
     })
 }
 
-fn parse_ident(c: &mut FileSequence) -> Option<TokenIdent> {
+fn parse_ident(c: &mut FileSequence, is_raw: bool) -> Option<TokenIdent> {
     let start = c.next_span();
     let mut builder = String::new();
 
@@ -437,6 +457,7 @@ fn parse_ident(c: &mut FileSequence) -> Option<TokenIdent> {
     Some(TokenIdent {
         span: start.until(c.next_span()),
         text: Intern::new(builder),
+        is_raw,
     })
 }
 
