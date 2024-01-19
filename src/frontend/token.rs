@@ -1,13 +1,13 @@
 use aunty::Obj;
 use unicode_xid::UnicodeXID;
 
-use std::fmt;
+use std::{fmt, rc::Rc};
 
 use crate::util::{
     diag::{Diagnostic, DiagnosticReporter},
     intern::{intern, Intern},
     parser::{ForkableCursor, ParseContext},
-    span::{FileCursor, FileData, FileLoc, FileSequence, Span},
+    span::{FileCursor, FileData, FileSequence, Span},
 };
 
 // === Tokens === //
@@ -17,6 +17,7 @@ pub enum Token {
     Group(TokenGroup),
     StringLit(TokenStringLit),
     CharLit(TokenCharLit),
+    NumberLit(TokenNumberLit),
     Ident(TokenIdent),
     Punct(TokenPunct),
 }
@@ -39,6 +40,12 @@ impl From<TokenCharLit> for Token {
     }
 }
 
+impl From<TokenNumberLit> for Token {
+    fn from(value: TokenNumberLit) -> Self {
+        Self::NumberLit(value)
+    }
+}
+
 impl From<TokenIdent> for Token {
     fn from(value: TokenIdent) -> Self {
         Self::Ident(value)
@@ -56,7 +63,7 @@ impl From<TokenPunct> for Token {
 pub struct TokenGroup {
     pub span: Span,
     pub delimiter: GroupDelimiter,
-    pub tokens: Vec<Token>,
+    pub tokens: Rc<[Token]>,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -92,6 +99,13 @@ pub struct TokenCharLit {
     pub ch: char,
 }
 
+// NumberLit
+#[derive(Debug, Clone)]
+pub struct TokenNumberLit {
+    pub span: Span,
+    pub data: Intern,
+}
+
 // Ident
 #[derive(Debug, Clone)]
 pub struct TokenIdent {
@@ -103,8 +117,9 @@ pub struct TokenIdent {
 // Puncts
 #[derive(Debug, Copy, Clone)]
 pub struct TokenPunct {
-    pub loc: FileLoc,
+    pub span: Span,
     pub char: PunctChar,
+    pub glued: bool,
 }
 
 macro_rules! define_puncts {
@@ -225,8 +240,19 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
         }))
     };
 
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+    enum ParseMode {
+        AfterPunct,
+        AfterNumeric,
+        #[default]
+        Normal,
+    }
+
+    let mut parse_mode = ParseMode::Normal;
+
     loop {
-        let next_span = c.next_span();
+        let curr_mode = std::mem::take(&mut parse_mode);
+        let start = c.next_span();
 
         // Match whitespace
         if c.expect(intern!("whitespace"), |c| {
@@ -246,12 +272,12 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
 
         // Match opening delimiters
         if let Some(delimiter) = parse_open_delimiter(c) {
-            tokens.push(parse_group(c, next_span, delimiter).into());
+            tokens.push(parse_group(c, start, delimiter).into());
             continue;
         }
 
         // Match closing delimiters
-        if let Some(close_delimiter) = parse_close_delimiter(c) {
+        if let Some(close_delimiter) = parse_close_delimiter(c, delimiter) {
             if delimiter != close_delimiter {
                 let prefix = if close_delimiter == GroupDelimiter::File {
                     "unclosed delimiter"
@@ -262,7 +288,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
                 c.error(
                     {
                         let mut diagnostic = Diagnostic::span_err(
-                            next_span,
+                            start,
                             format!("{prefix}; expected {}", delimiter.closer()),
                         );
 
@@ -294,10 +320,19 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
             continue;
         }
 
+        // Match numeric literals
+        if curr_mode != ParseMode::AfterNumeric {
+            if let Some(nl) = parse_numeric_literal(c) {
+                tokens.push(nl.into());
+                parse_mode = ParseMode::AfterNumeric;
+                continue;
+            }
+        }
+
         // Match raw identifier or punctuation
         if c.expect(intern!("`@`"), |c| c.next() == Some('@')) {
             // Match as raw identifier
-            if let Some(ident) = parse_ident(c, true) {
+            if let Some(ident) = parse_ident(c, start, true) {
                 tokens.push(ident.into());
                 continue;
             }
@@ -305,29 +340,35 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
             // Otherwise, treat as punctuation.
             tokens.push(
                 TokenPunct {
-                    loc: next_span.start(),
+                    span: start,
                     char: punct!('@'),
+                    glued: curr_mode == ParseMode::AfterPunct,
                 }
                 .into(),
             );
+            parse_mode = ParseMode::AfterPunct;
             continue;
         }
 
         // Match ident
-        if let Some(ident) = parse_ident(c, false) {
-            tokens.push(ident.into());
-            continue;
+        if curr_mode != ParseMode::AfterNumeric {
+            if let Some(ident) = parse_ident(c, start, false) {
+                tokens.push(ident.into());
+                continue;
+            }
         }
 
         // Match punctuation
-        if let Some(char) = parse_punct_char(c) {
+        if let Some(char) = parse_punct_char(c, curr_mode != ParseMode::AfterNumeric) {
             tokens.push(
                 TokenPunct {
-                    loc: next_span.start(),
+                    span: start,
                     char,
+                    glued: curr_mode == ParseMode::AfterPunct,
                 }
                 .into(),
             );
+            parse_mode = ParseMode::AfterPunct;
             continue;
         }
 
@@ -341,7 +382,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
     TokenGroup {
         span: open_span.until(c.next_span()),
         delimiter,
-        tokens,
+        tokens: Rc::from_iter(tokens),
     }
 }
 
@@ -409,34 +450,45 @@ fn parse_open_delimiter(c: &mut FileSequence) -> Option<GroupDelimiter> {
     None
 }
 
-fn parse_close_delimiter(c: &mut FileSequence) -> Option<GroupDelimiter> {
-    if c.expect(intern!("`}`"), |c| c.next() == Some('}')) {
+fn parse_close_delimiter(c: &mut FileSequence, expected: GroupDelimiter) -> Option<GroupDelimiter> {
+    if c.expect_covert(expected == GroupDelimiter::Brace, intern!("`}`"), |c| {
+        c.next() == Some('}')
+    }) {
         return Some(GroupDelimiter::Brace);
     }
 
-    if c.expect(intern!("`]`"), |c| c.next() == Some(']')) {
+    if c.expect_covert(expected == GroupDelimiter::Bracket, intern!("`]`"), |c| {
+        c.next() == Some(']')
+    }) {
         return Some(GroupDelimiter::Bracket);
     }
 
-    if c.expect(intern!("`)`"), |c| c.next() == Some(')')) {
+    if c.expect_covert(expected == GroupDelimiter::Paren, intern!("`)`"), |c| {
+        c.next() == Some(')')
+    }) {
         return Some(GroupDelimiter::Paren);
     }
 
-    if c.expect(intern!("end of file"), |c| c.next().is_none()) {
+    if c.expect_covert(
+        expected == GroupDelimiter::File,
+        intern!("end of file"),
+        |c| c.next().is_none(),
+    ) {
         return Some(GroupDelimiter::File);
     }
 
     None
 }
 
-fn parse_punct_char(c: &mut FileSequence) -> Option<PunctChar> {
+fn parse_punct_char(c: &mut FileSequence, allow_period: bool) -> Option<PunctChar> {
     c.expect(intern!("punctuation"), |c| {
-        c.next().and_then(PunctChar::from_char)
+        c.next()
+            .and_then(PunctChar::from_char)
+            .filter(|&c| allow_period || c != punct!('.'))
     })
 }
 
-fn parse_ident(c: &mut FileSequence, is_raw: bool) -> Option<TokenIdent> {
-    let start = c.next_span();
+fn parse_ident(c: &mut FileSequence, start: Span, is_raw: bool) -> Option<TokenIdent> {
     let mut builder = String::new();
 
     // Match first character
@@ -704,4 +756,165 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     c.stuck(|_| ());
 
     None
+}
+
+fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
+    let start = c.next_span();
+    let mut builder = String::new();
+
+    // Match first digit
+    let digit = c.expect(intern!("numeric literal"), |c| {
+        c.next().filter(|c| c.is_ascii_digit())
+    })?;
+    builder.push(digit);
+
+    // Natch prefix
+    let prefix = if digit == '0' {
+        if c.expect(intern!("`x`"), |c| c.next() == Some('x')) {
+            builder.push('x');
+            DigitKind::Hexadecimal
+        } else if c.expect(intern!("`b`"), |c| c.next() == Some('b')) {
+            builder.push('b');
+            DigitKind::Binary
+        } else if c.expect(intern!("`o`"), |c| c.next() == Some('o')) {
+            builder.push('o');
+            DigitKind::Octal
+        } else {
+            DigitKind::Decimal
+        }
+    } else {
+        c.hint_stuck_if_passes(
+            "prefixes cannot be used unless the first digit of the number is a `0`",
+            |c| matches!(c.next(), Some('x' | 'b' | 'o')),
+        );
+
+        DigitKind::Decimal
+    };
+
+    // Match integral part
+    parse_digits(c, &mut builder, prefix);
+
+    // Match fractional part
+    if prefix == DigitKind::Decimal {
+        if c.expect(intern!("`.`"), |c| c.next() == Some('.')) {
+            builder.push('.');
+
+            // Match zero or more fractional digits
+            parse_digits(c, &mut builder, DigitKind::Decimal);
+        }
+    } else {
+        c.hint_stuck_if_passes(
+            format_args!(
+                "fractional parts cannot be specified for {} numbers",
+                prefix.prefix()
+            ),
+            |c| c.next() == Some('.'),
+        );
+    }
+
+    // Match exponential part
+    if prefix == DigitKind::Decimal {
+        if c.expect(intern!("`e`"), |c| matches!(c.next(), Some('e' | 'E'))) {
+            // Match sign
+            if c.expect(intern!("`+`"), |c| c.next() == Some('+')) {
+                builder.push('+');
+            } else if c.expect(intern!("`-`"), |c| c.next() == Some('-')) {
+                builder.push('-');
+            };
+
+            // Match zero or more exponent digits
+            parse_digits(c, &mut builder, DigitKind::Decimal);
+        }
+    } else {
+        c.hint_stuck_if_passes(
+            format_args!(
+                "exponent cannot be specified for {} numbers",
+                prefix.prefix()
+            ),
+            |c| matches!(c.next(), Some('e' | 'E')),
+        );
+    }
+
+    // Match suffix
+    let suffixes = [
+        "usize", "isize", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128",
+        "f32", "f64",
+    ];
+    if let Some(suffix) = c.expect(intern!("numeric type suffix"), |c| {
+        suffixes
+            .iter()
+            .find(|e| c.lookahead(|c| e.chars().all(|e| c.next() == Some(e))))
+    }) {
+        builder.push_str(suffix);
+    } else {
+        c.hint_stuck_if_passes("this is not a valid suffix integer suffix", |c| {
+            if c.next().is_some_and(|c| c.is_xid_start()) {
+                while c.peek().is_some_and(|c| c.is_xid_continue()) {
+                    c.next();
+                }
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    Some(TokenNumberLit {
+        span: start.until(c.next_span()),
+        data: Intern::new(builder),
+    })
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum DigitKind {
+    Hexadecimal,
+    Binary,
+    Octal,
+    Decimal,
+}
+
+impl DigitKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            DigitKind::Hexadecimal => "hexadecimal",
+            DigitKind::Binary => "binary",
+            DigitKind::Octal => "octal",
+            DigitKind::Decimal => "decimal",
+        }
+    }
+}
+
+fn parse_digits(c: &mut FileSequence, builder: &mut String, kind: DigitKind) {
+    loop {
+        // Match digit
+        if let Some(matched) = match kind {
+            DigitKind::Hexadecimal => c.expect(intern!("decimal digit"), |c| {
+                c.next().filter(|c| c.is_ascii_hexdigit())
+            }),
+            DigitKind::Binary => c.expect(intern!("binary digit"), |c| {
+                c.next().filter(|&c| matches!(c, '0'..='1'))
+            }),
+            DigitKind::Octal => c.expect(intern!("octal digit"), |c| {
+                c.next().filter(|&c| matches!(c, '0'..='7'))
+            }),
+            DigitKind::Decimal => c.expect(intern!("decimal digit"), |c| {
+                c.next().filter(|c| c.is_ascii_digit())
+            }),
+        } {
+            builder.push(matched);
+            continue;
+        } else {
+            c.hint_stuck_if_passes(
+                format_args!("this is not a valid digit for a {} number", kind.prefix()),
+                |c| c.next().is_some_and(|c| c.is_ascii_hexdigit()),
+            );
+        }
+
+        // Match underscore
+        if c.expect(intern!("`_`"), |c| c.next() == Some('_')) {
+            continue;
+        }
+
+        break;
+    }
 }

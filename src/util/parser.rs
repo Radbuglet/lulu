@@ -103,7 +103,7 @@ pub struct ParseSequence<'cx, I> {
     cx: &'cx ParseContext,
     cursor: I,
     expectations: Vec<Intern>,
-    stuck_hints: Vec<String>,
+    stuck_hints: Vec<(Span, String)>,
 }
 
 impl<'cx, I> ParseSequence<'cx, I> {
@@ -128,7 +128,12 @@ impl<'cx, I> ParseSequence<'cx, I> {
         f(&mut self.cursor)
     }
 
-    pub fn expect<R>(&mut self, expectation: Intern, f: impl FnOnce(&mut I) -> R) -> R
+    pub fn expect_covert<R>(
+        &mut self,
+        visible: bool,
+        expectation: Intern,
+        f: impl FnOnce(&mut I) -> R,
+    ) -> R
     where
         I: ParseCursor,
         R: LookaheadResult,
@@ -136,10 +141,18 @@ impl<'cx, I> ParseSequence<'cx, I> {
         let res = self.cursor.lookahead(f);
         if res.is_truthy() {
             self.moved_forward();
-        } else {
+        } else if visible {
             self.expectations.push(expectation);
         }
         res
+    }
+
+    pub fn expect<R>(&mut self, expectation: Intern, f: impl FnOnce(&mut I) -> R) -> R
+    where
+        I: ParseCursor,
+        R: LookaheadResult,
+    {
+        self.expect_covert(true, expectation, f)
     }
 
     pub fn hint_stuck_if_passes<R>(
@@ -150,13 +163,15 @@ impl<'cx, I> ParseSequence<'cx, I> {
         I: ParseCursor,
         R: LookaheadResult,
     {
-        if f(&mut self.cursor.clone()).is_truthy() {
-            self.hint_stuck(reason.to_string());
+        let start = self.next_span();
+        let mut fork = self.cursor.clone();
+        if f(&mut fork).is_truthy() {
+            self.hint_stuck(start.until(fork.next_span()), reason.to_string());
         }
     }
 
-    pub fn hint_stuck(&mut self, reason: impl Into<String>) {
-        self.stuck_hints.push(reason.into());
+    pub fn hint_stuck(&mut self, span: Span, reason: impl Into<String>) {
+        self.stuck_hints.push((span, reason.into()));
     }
 
     pub fn stuck_lookahead<R>(&mut self, recover: impl FnOnce(&mut I) -> R)
@@ -220,8 +235,10 @@ impl<'cx, I> ParseSequence<'cx, I> {
             let mut diagnostic =
                 Diagnostic::span_err(span, format!("expected {expectations}{while_parsing}"));
 
-            for hint in &self.stuck_hints {
-                diagnostic.subs.push(Diagnostic::new_note(hint.clone()));
+            for (hint_span, hint) in &self.stuck_hints {
+                diagnostic
+                    .subs
+                    .push(Diagnostic::span_note(*hint_span, hint.clone()));
             }
 
             diagnostic

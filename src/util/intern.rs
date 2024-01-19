@@ -1,19 +1,17 @@
 use std::{
     fmt::{self, Write},
     hash::BuildHasher,
-    mem::ManuallyDrop,
 };
 
-use aunty::{make_extensible, CyclicCtor, Entity, Obj, ObjMut, ObjRef, StrongEntity};
+use aunty::{make_extensible, Obj, ObjMut, ObjRef, StrongObj};
 use hashbrown::hash_map::RawEntryMut;
 
 use super::map::FxHashMap;
 
-// === Interns === //
+// === Interner === //
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Interner {
-    me: Entity,
     intern_map: FxHashMap<(usize, u64), ()>,
     offsets: Vec<usize>,
     buffer: String,
@@ -22,15 +20,6 @@ pub struct Interner {
 make_extensible!(pub InternerObj for Interner);
 
 impl Interner {
-    pub fn new() -> impl CyclicCtor<Self> {
-        |me, _| Self {
-            me,
-            intern_map: FxHashMap::default(),
-            offsets: Vec::new(),
-            buffer: String::new(),
-        }
-    }
-
     pub fn intern(&mut self, str: impl fmt::Display) -> Intern {
         self.build().with(str).commit()
     }
@@ -43,8 +32,6 @@ impl Interner {
     }
 
     pub fn decode(&self, intern: Intern) -> &str {
-        assert_eq!(self.me, intern.interner);
-
         let start = self.offsets[intern.index];
         let end = self
             .offsets
@@ -111,7 +98,6 @@ impl InternBuilder<'_> {
         match entry {
             RawEntryMut::Occupied(entry) => {
                 let intern = Intern {
-                    interner: self.interner.me,
                     index: (entry.get_key_value().0).0,
                 };
                 drop(self); // Discard the temporary buffer
@@ -122,10 +108,7 @@ impl InternBuilder<'_> {
                 self.interner.offsets.push(self.old_len);
                 entry.insert_with_hasher(hash, (index, hash), (), |k| k.1);
 
-                let intern = Intern {
-                    interner: self.interner.me,
-                    index,
-                };
+                let intern = Intern { index };
                 std::mem::forget(self); // Ensure that we don't discard the temporary buffer
                 intern
             }
@@ -153,53 +136,42 @@ impl Drop for InternBuilder<'_> {
     }
 }
 
+thread_local! {
+    static GLOBAL_INTERNER: StrongObj<Interner> = Default::default();
+}
+
+pub fn global_interner() -> Obj<Interner> {
+    GLOBAL_INTERNER.with(|v| v.downgrade())
+}
+
+pub fn global_interner_ref() -> ObjRef<Interner> {
+    GLOBAL_INTERNER.with(|v| v.get())
+}
+
+pub fn global_interner_mut() -> ObjMut<Interner> {
+    GLOBAL_INTERNER.with(|v| v.get_mut())
+}
+
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub struct Intern {
-    interner: Entity,
     index: usize,
 }
 
 impl Intern {
     pub fn new(str: impl fmt::Display) -> Self {
-        thread_local! {
-            // N.B. we can't drop this `StrongEntity` since we can't access other TLS slots while
-            // running a destructor.
-            static GLOBAL_INTERNER: ManuallyDrop<(StrongEntity, Obj<Interner>)> = ManuallyDrop::new({
-                let interner = StrongEntity::new().with_cyclic(Interner::new());
-                let obj = interner.obj();
-                (interner, obj)
-            });
-        }
-
-        GLOBAL_INTERNER.with(|tls| tls.1.intern(str))
-    }
-
-    pub fn interner(&self) -> Entity {
-        self.interner
-    }
-
-    pub fn interner_obj(&self) -> Obj<Interner> {
-        self.interner.obj()
-    }
-
-    pub fn interner_ref(&self) -> ObjRef<Interner> {
-        self.interner.get()
-    }
-
-    pub fn interner_mut(&self) -> ObjMut<Interner> {
-        self.interner.get_mut()
+        global_interner_mut().intern(str)
     }
 }
 
 impl fmt::Debug for Intern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.interner_ref().decode(*self).fmt(f)
+        global_interner_ref().decode(*self).fmt(f)
     }
 }
 
 impl fmt::Display for Intern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.interner_ref().decode(*self))
+        f.write_str(global_interner_ref().decode(*self))
     }
 }
 

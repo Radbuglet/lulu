@@ -8,6 +8,6 @@ fn main(args: string[]) {
               |woo \
               |whe\t";
     let bar = '\u{_AF}';
-	//let baz = (4.3e+3f32, 0xF_F2);
+	let baz = (474_134.e-332i32);
 	let @foo = "bar" @ baz;
 }
