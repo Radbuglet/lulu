@@ -1,7 +1,7 @@
 use anyhow::Context;
 use aunty::{StrongEntity, StrongObj};
 use lulu::{
-    frontend::token::tokenize,
+    frontend::{parser::parse_file, token::tokenize},
     util::{diag::DiagnosticReporter, span::FileData},
 };
 
@@ -18,8 +18,9 @@ fn main() -> anyhow::Result<()> {
     let diag = StrongObj::<DiagnosticReporter>::default();
     let file = StrongEntity::new().with_cyclic(FileData::new(in_path, in_data));
 
-    // Tokenize source
+    // Parse source
     let tokens = tokenize(diag.downgrade(), &file.get::<FileData>());
+    parse_file(diag.downgrade(), &tokens);
 
     if diag.has_errors() {
         println!("Errors:");

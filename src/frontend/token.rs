@@ -6,7 +6,7 @@ use std::{fmt, rc::Rc};
 use crate::util::{
     diag::{Diagnostic, DiagnosticReporter},
     intern::{intern, Intern},
-    parser::{ForkableCursor, ParseContext},
+    parser::{ForkableCursor, ParseContext, ParseCursor, ParseSequence},
     span::{FileCursor, FileData, FileSequence, Span},
 };
 
@@ -20,6 +20,19 @@ pub enum Token {
     NumberLit(TokenNumberLit),
     Ident(TokenIdent),
     Punct(TokenPunct),
+}
+
+impl Token {
+    pub fn span(&self) -> Span {
+        match self {
+            Token::Group(group) => group.open,
+            Token::StringLit(lit) => lit.span,
+            Token::CharLit(lit) => lit.span,
+            Token::NumberLit(lit) => lit.span,
+            Token::Ident(ident) => ident.span,
+            Token::Punct(punct) => punct.span,
+        }
+    }
 }
 
 impl From<TokenGroup> for Token {
@@ -61,9 +74,23 @@ impl From<TokenPunct> for Token {
 // Group
 #[derive(Debug, Clone)]
 pub struct TokenGroup {
-    pub span: Span,
+    pub open: Span,
+    pub close: Span,
     pub delimiter: GroupDelimiter,
     pub tokens: Rc<[Token]>,
+}
+
+impl TokenGroup {
+    pub fn span(&self) -> Span {
+        self.open.to(self.close)
+    }
+
+    pub fn cursor(&self) -> TokenCursor<'_> {
+        TokenCursor {
+            close_span: self.close,
+            iter: self.tokens.iter(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -223,7 +250,7 @@ pub fn tokenize(diag: Obj<DiagnosticReporter>, file: &FileData) -> TokenGroup {
     let cx = ParseContext::new(diag);
     {
         let mut c = cx.enter(FileCursor::new(file));
-        let open_span = c.next_span();
+        let open_span = Span::new(c.next_span().start(), c.next_span().start());
         parse_group(&mut c, open_span, GroupDelimiter::File)
     }
 }
@@ -250,9 +277,9 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
 
     let mut parse_mode = ParseMode::Normal;
 
-    loop {
+    let close_span = loop {
         let curr_mode = std::mem::take(&mut parse_mode);
-        let start = c.next_span();
+        let curr_start = c.next_span();
 
         // Match whitespace
         if c.expect(intern!("whitespace"), |c| {
@@ -272,7 +299,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
 
         // Match opening delimiters
         if let Some(delimiter) = parse_open_delimiter(c) {
-            tokens.push(parse_group(c, start, delimiter).into());
+            tokens.push(parse_group(c, curr_start, delimiter).into());
             continue;
         }
 
@@ -288,7 +315,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
                 c.error(
                     {
                         let mut diagnostic = Diagnostic::span_err(
-                            start,
+                            curr_start,
                             format!("{prefix}; expected {}", delimiter.closer()),
                         );
 
@@ -305,7 +332,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
                 );
             }
 
-            break;
+            break curr_start;
         }
 
         // Match string literals
@@ -332,7 +359,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
         // Match raw identifier or punctuation
         if c.expect(intern!("`@`"), |c| c.next() == Some('@')) {
             // Match as raw identifier
-            if let Some(ident) = parse_ident(c, start, true) {
+            if let Some(ident) = parse_ident(c, curr_start, true) {
                 tokens.push(ident.into());
                 continue;
             }
@@ -340,7 +367,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
             // Otherwise, treat as punctuation.
             tokens.push(
                 TokenPunct {
-                    span: start,
+                    span: curr_start,
                     char: punct!('@'),
                     glued: curr_mode == ParseMode::AfterPunct,
                 }
@@ -352,7 +379,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
 
         // Match ident
         if curr_mode != ParseMode::AfterNumeric {
-            if let Some(ident) = parse_ident(c, start, false) {
+            if let Some(ident) = parse_ident(c, curr_start, false) {
                 tokens.push(ident.into());
                 continue;
             }
@@ -362,7 +389,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
         if let Some(char) = parse_punct_char(c, curr_mode != ParseMode::AfterNumeric) {
             tokens.push(
                 TokenPunct {
-                    span: start,
+                    span: curr_start,
                     char,
                     glued: curr_mode == ParseMode::AfterPunct,
                 }
@@ -377,10 +404,11 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
             // Just ignore the offending character.
             let _ = c.next();
         });
-    }
+    };
 
     TokenGroup {
-        span: open_span.until(c.next_span()),
+        open: open_span,
+        close: close_span,
         delimiter,
         tokens: Rc::from_iter(tokens),
     }
@@ -916,5 +944,30 @@ fn parse_digits(c: &mut FileSequence, builder: &mut String, kind: DigitKind) {
         }
 
         break;
+    }
+}
+
+// === TokenCursor === //
+
+pub type TokenSequence<'a> = ParseSequence<'a, TokenCursor<'a>>;
+
+#[derive(Debug, Clone)]
+pub struct TokenCursor<'a> {
+    pub close_span: Span,
+    pub iter: std::slice::Iter<'a, Token>,
+}
+
+impl<'a> Iterator for TokenCursor<'a> {
+    type Item = &'a Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+}
+impl ForkableCursor for TokenCursor<'_> {}
+
+impl ParseCursor for TokenCursor<'_> {
+    fn next_span(&self) -> Span {
+        self.peek().map_or(self.close_span, |token| token.span())
     }
 }

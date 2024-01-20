@@ -88,7 +88,7 @@ impl InternBuilder<'_> {
                     let end = self
                         .interner
                         .offsets
-                        .get(*idx)
+                        .get(*idx + 1)
                         .copied()
                         .unwrap_or(self.old_len);
 
