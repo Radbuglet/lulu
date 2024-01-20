@@ -25,9 +25,6 @@ fn main() -> anyhow::Result<()> {
     if diag.has_errors() {
         println!("Errors:");
         dbg!(diag);
-    } else {
-        println!("Success:");
-        dbg!(tokens);
     }
 
     Ok(())

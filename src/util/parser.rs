@@ -10,7 +10,7 @@ use rustc_hash::FxHashSet;
 use super::{
     diag::{Diagnostic, DiagnosticReporter},
     intern::Intern,
-    span::{FileLoc, Span},
+    span::Span,
 };
 
 // === LookaheadResult === //
@@ -42,7 +42,7 @@ impl<T, E> LookaheadResult for Result<T, E> {
 #[derive(Debug, Clone)]
 pub struct ParseContext {
     diagnostics: Obj<DiagnosticReporter>,
-    while_parsing: RefCell<Vec<(FileLoc, Intern)>>,
+    while_parsing: RefCell<Vec<(Span, Intern)>>,
     got_stuck: Cell<bool>,
 }
 
@@ -64,7 +64,7 @@ impl ParseContext {
         }
     }
 
-    pub fn while_parsing(&self, starting_at: FileLoc, what: Intern) -> WhileParsingGuard<'_> {
+    pub fn while_parsing(&self, starting_at: Span, what: Intern) -> WhileParsingGuard<'_> {
         self.while_parsing.borrow_mut().push((starting_at, what));
 
         WhileParsingGuard {
@@ -115,7 +115,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
     where
         I: ParseCursor,
     {
-        self.cx.while_parsing(self.next_span().start(), what)
+        self.cx.while_parsing(self.next_span(), what)
     }
 
     fn moved_forward(&mut self) {
@@ -224,7 +224,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
                     stack
                         .iter()
                         .rev()
-                        .map(|(loc, what)| format!("{what} starting at {}", loc.line_and_column()))
+                        .map(|(loc, what)| format!("{what} starting at {loc:?}"))
                         .collect::<Vec<_>>()
                         .join(" in ")
                 )

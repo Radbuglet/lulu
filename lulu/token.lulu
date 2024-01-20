@@ -1,15 +1,3 @@
-i_love_this_language;
+namespace whee::@namespace;
 
-// Hello, World!
-/* of pie! */
-
-/// This is a markdown doc-comment!
-/// Yes, Lulu supports these as well!
-fn main(args: string[]) {
-    let foo = "whee\n\
-              |woo \
-              |whe\t";
-    let bar = '\u{_AF}';
-	let baz = (474_134.e-332i32);
-	let @foo = "bar" @ baz;
-}
+pub(crate::super::super) fn whee

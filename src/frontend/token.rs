@@ -25,12 +25,54 @@ pub enum Token {
 impl Token {
     pub fn span(&self) -> Span {
         match self {
-            Token::Group(group) => group.open,
+            Token::Group(group) => group.span(),
             Token::StringLit(lit) => lit.span,
             Token::CharLit(lit) => lit.span,
             Token::NumberLit(lit) => lit.span,
             Token::Ident(ident) => ident.span,
             Token::Punct(punct) => punct.span,
+        }
+    }
+
+    pub fn as_group(&self) -> Option<&TokenGroup> {
+        match self {
+            Self::Group(token) => Some(token),
+            _ => None,
+        }
+    }
+
+    pub fn as_string_lit(&self) -> Option<&TokenStringLit> {
+        match self {
+            Self::StringLit(token) => Some(token),
+            _ => None,
+        }
+    }
+
+    pub fn as_char_lit(&self) -> Option<&TokenCharLit> {
+        match self {
+            Self::CharLit(token) => Some(token),
+            _ => None,
+        }
+    }
+
+    pub fn as_number_lit(&self) -> Option<&TokenNumberLit> {
+        match self {
+            Self::NumberLit(token) => Some(token),
+            _ => None,
+        }
+    }
+
+    pub fn as_ident(&self) -> Option<&TokenIdent> {
+        match self {
+            Self::Ident(token) => Some(token),
+            _ => None,
+        }
+    }
+
+    pub fn as_punct(&self) -> Option<&TokenPunct> {
+        match self {
+            Self::Punct(token) => Some(token),
+            _ => None,
         }
     }
 }
@@ -113,28 +155,28 @@ impl GroupDelimiter {
 }
 
 // StringLit
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TokenStringLit {
     pub span: Span,
     pub inner: Intern,
 }
 
 // CharLit
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TokenCharLit {
     pub span: Span,
     pub ch: char,
 }
 
 // NumberLit
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TokenNumberLit {
     pub span: Span,
     pub data: Intern,
 }
 
 // Ident
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TokenIdent {
     pub span: Span,
     pub text: Intern,
