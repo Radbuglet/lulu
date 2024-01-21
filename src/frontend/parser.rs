@@ -1,8 +1,11 @@
-use crate::util::{
-    diag::DiagnosticReporter,
-    intern::{intern, Intern},
-    parser::{ParseContext, ParseCursor},
-    span::Span,
+use crate::{
+    frontend::ast::AstPathPart,
+    util::{
+        diag::DiagnosticReporter,
+        intern::{intern, Intern},
+        parser::{ParseContext, ParseCursor},
+        span::Span,
+    },
 };
 
 use std::fmt;
@@ -10,8 +13,9 @@ use std::fmt;
 use aunty::Obj;
 use rustc_hash::FxHashMap;
 
-use super::token::{
-    punct, GroupDelimiter, PunctChar, Token, TokenGroup, TokenIdent, TokenSequence,
+use super::{
+    ast::{AstMultiPath, AstMultiPathList, AstPath, AstPathPrefix},
+    token::{punct, GroupDelimiter, PunctChar, Token, TokenGroup, TokenIdent, TokenSequence},
 };
 
 // === Keywords === //
@@ -142,12 +146,12 @@ fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
     parse_puncts(c, intern!("`::`"), &[punct!(':'), punct!(':')])
 }
 
-fn parse_semi(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`;`"), &[punct!(';')])
-}
-
 fn parse_asterisk(c: &mut TokenSequence) -> Option<Span> {
     parse_puncts(c, intern!("`*`"), &[punct!('*')])
+}
+
+fn parse_comma(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`,`"), &[punct!(',')])
 }
 
 fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
@@ -167,162 +171,137 @@ fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Opti
 
 // === Parsers === //
 
-pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) {
+pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fmt::Debug {
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
-    parse_module(&mut c)
+
+    let path = AstMultiPath::parse(&mut c);
+    if !c.expect(intern!("end of file"), |c| c.next().is_none()) {
+        c.stuck(|_| ());
+    }
+
+    path
 }
 
-fn parse_module(c: &mut TokenSequence) {
-    loop {
-        // === Directives without visibility === //
+// === Paths === //
 
-        // Match end-of-file
-        if c.expect(intern!("end of file"), |c| c.next().is_none()) {
+impl AstPath {
+    pub fn parse(c: &mut TokenSequence) -> Self {
+        let _wp = c.while_parsing(intern!("path"));
+        let (expecting_part, me) = Self::parse_inner(c, true);
+        if expecting_part {
+            c.stuck(|_| ());
+        }
+
+        me
+    }
+
+    fn parse_inner(c: &mut TokenSequence, is_root: bool) -> (bool, Self) {
+        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+        enum Phase {
+            WaitingForTurbo,
+            WaitingForPart,
+        }
+
+        // Match prefix
+        let (prefix, mut phase, mut expecting_something) =
+            if is_root && parse_keyword(c, AstKeyword::Crate).is_some() {
+                (AstPathPrefix::Crate, Phase::WaitingForTurbo, false)
+            } else if is_root && parse_turbo(c).is_some() {
+                (AstPathPrefix::Crates, Phase::WaitingForPart, true)
+            } else if is_root && parse_keyword(c, AstKeyword::Self_).is_some() {
+                (AstPathPrefix::Self_, Phase::WaitingForTurbo, false)
+            } else {
+                (AstPathPrefix::Self_, Phase::WaitingForPart, false)
+            };
+
+        // Match parts
+        let mut parts = Vec::new();
+        loop {
+            match phase {
+                Phase::WaitingForTurbo => {
+                    if parse_turbo(c).is_some() {
+                        phase = Phase::WaitingForPart;
+                        expecting_something = true;
+                        continue;
+                    }
+                }
+                Phase::WaitingForPart => {
+                    if let Some(part) = parse_identifier(c, intern!("path part")).or_else(|| {
+                        is_root
+                            .then(|| parse_keyword(c, AstKeyword::Super))
+                            .flatten()
+                    }) {
+                        parts.push(AstPathPart(part));
+                        phase = Phase::WaitingForTurbo;
+                        expecting_something = false;
+                        continue;
+                    }
+                }
+            }
+
             break;
         }
 
-        // Match namespace declaration
-        if let Some(_namespace) = parse_namespace_decl(c) {
-            continue;
-        }
-
-        // === Directives with visibility === //
-
-        // Match optional visibility
-        let _vis = parse_visibility(c);
-
-        // Match function declaration
-        if let Some(_fn) = parse_function_decl(c) {
-            continue;
-        }
-
-        c.stuck(|c| {
-            let _ = c.next();
-        });
+        (
+            expecting_something,
+            Self {
+                prefix,
+                parts: Box::from_iter(parts),
+            },
+        )
     }
 }
 
-fn parse_namespace_decl(c: &mut TokenSequence) -> Option<Vec<TokenIdent>> {
-    let _wp = c.while_parsing(intern!("namespace declaration"));
-
-    // Match namespace keyword
-    let _namespace = parse_keyword(c, AstKeyword::Namespace)?;
-
-    // Match path
-    let parts = parse_path(c, PathParseKind::Namespace);
-    if parts.is_empty() {
-        c.stuck(|_| ());
+impl AstMultiPath {
+    pub fn parse(c: &mut TokenSequence) -> Self {
+        Self::parse_inner(c, true)
     }
 
-    // Match semicolon
-    if parse_semi(c).is_none() {
-        c.stuck(|_| ());
+    fn parse_inner(c: &mut TokenSequence, is_root: bool) -> Self {
+        // Match path base
+        let (expecting_part, base) = AstPath::parse_inner(c, is_root);
+
+        // Match tree part
+        let imports = if expecting_part {
+            let start_span = c.next_span();
+
+            if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+                let _wp = c.context().while_parsing(start_span, intern!("path tree"));
+                let mut parts = Vec::new();
+                let mut c = c.enter(group.cursor());
+
+                // Match path
+                loop {
+                    // Match separating comma
+                    if !parts.is_empty() && parse_comma(&mut c).is_none() {
+                        break;
+                    }
+
+                    // Match path
+                    let path = AstMultiPath::parse_inner(&mut c, false);
+                    if path.is_empty() {
+                        break;
+                    }
+                    parts.push(path);
+                }
+
+                // Match EOS
+                if !c.expect(intern!("`}`"), |c| c.next().is_none()) {
+                    c.stuck(|_| ());
+                }
+
+                AstMultiPathList::List(Box::from_iter(parts))
+            } else if parse_asterisk(c).is_some() {
+                AstMultiPathList::Wildcard
+            } else {
+                c.stuck(|_| ());
+                AstMultiPathList::List(Box::from_iter([]))
+            }
+        } else {
+            AstMultiPathList::List(Box::from_iter([]))
+        };
+
+        Self { base, imports }
     }
-
-    Some(parts)
-}
-
-fn parse_function_decl(c: &mut TokenSequence) -> Option<()> {
-    let _wp = c.while_parsing(intern!("function declaration"));
-
-    // Match `fn` keyword
-    let _fn = parse_keyword(c, AstKeyword::Fn)?;
-
-    // Match function name
-    let name = parse_identifier(c, intern!("function name"));
-    if name.is_none() {
-        c.stuck(|_| ());
-    }
-
-    Some(())
-}
-
-fn parse_visibility(c: &mut TokenSequence) -> Option<()> {
-    let _wp = c.while_parsing(intern!("path qualifier"));
-
-    // Match `pub`
-    let _pub = parse_keyword(c, AstKeyword::Pub)?;
-
-    // Match optional path
-    if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
-        let mut c = c.enter(group.cursor());
-
-        // Match path
-        let path = parse_path(&mut c, PathParseKind::Tree);
-        if path.is_empty() {
-            c.stuck(|_| ());
-        }
-
-        // Match EOF
-        if !c.expect(intern!(")"), |c| c.next().is_none()) {
-            c.stuck(|_| ());
-        }
-    }
-
-    Some(())
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum PathParseKind {
-    Namespace,
-    Single,
-    Tree,
-}
-
-fn parse_path(c: &mut TokenSequence, kind: PathParseKind) -> Vec<TokenIdent> {
-    let mut parts = Vec::new();
-
-    // Match prefix
-    if kind != PathParseKind::Namespace {
-        if let Some(ident) = parse_keyword(c, AstKeyword::Crate)
-            .or_else(|| parse_keyword(c, AstKeyword::Super))
-            .or_else(|| parse_keyword(c, AstKeyword::Self_))
-        {
-            parts.push(ident);
-        }
-    } else {
-        c.hint_stuck_if_passes("cannot use path qualifiers in this context", |c| {
-            c.next().and_then(Token::as_ident).is_some_and(|c| {
-                let kws = [AstKeyword::Crate, AstKeyword::Super, AstKeyword::Self_];
-                kws.iter().any(|kw| c.text == kw.to_intern())
-            })
-        });
-    }
-
-    // Match subsequent parts
-    let expecting_subsequent = loop {
-        // Match turbo if expected for continuation
-        if !parts.is_empty() && parse_turbo(c).is_none() {
-            break false;
-        }
-
-        // Match path part
-        if let Some(part) = parse_identifier(c, intern!("path part")).or_else(|| {
-            (kind != PathParseKind::Namespace)
-                .then(|| parse_keyword(c, AstKeyword::Super))
-                .flatten()
-        }) {
-            parts.push(part);
-            continue;
-        }
-
-        break true;
-    };
-
-    // Match tree part
-    if kind == PathParseKind::Tree {
-        if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
-            let mut c = c.enter(group.cursor());
-            todo!();
-        } else if parse_asterisk(c).is_some() {
-            todo!()
-        } else if expecting_subsequent {
-            c.stuck(|_| ());
-        }
-    } else if expecting_subsequent {
-        c.stuck(|_| ());
-    }
-
-    parts
 }

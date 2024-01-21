@@ -20,11 +20,14 @@ fn main() -> anyhow::Result<()> {
 
     // Parse source
     let tokens = tokenize(diag.downgrade(), &file.get::<FileData>());
-    parse_file(diag.downgrade(), &tokens);
+    let ast = parse_file(diag.downgrade(), &tokens);
 
     if diag.has_errors() {
         println!("Errors:");
         dbg!(diag);
+    } else {
+        println!("Success:");
+        dbg!(ast);
     }
 
     Ok(())

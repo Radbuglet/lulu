@@ -1,3 +1,1 @@
-namespace whee::@namespace;
-
-pub(crate::super::super) fn whee
+self::{foo::{whee::woo::{@self}}}
