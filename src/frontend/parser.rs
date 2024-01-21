@@ -14,7 +14,7 @@ use aunty::Obj;
 use rustc_hash::FxHashMap;
 
 use super::{
-    ast::{AstMultiPath, AstMultiPathList, AstPath, AstPathPrefix},
+    ast::{AstMultiPath, AstMultiPathList, AstPath, AstPathPrefix, AstType, AstTypeKind},
     token::{punct, GroupDelimiter, PunctChar, Token, TokenGroup, TokenIdent, TokenSequence},
 };
 
@@ -154,6 +154,18 @@ fn parse_comma(c: &mut TokenSequence) -> Option<Span> {
     parse_puncts(c, intern!("`,`"), &[punct!(',')])
 }
 
+fn parse_question(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`?`"), &[punct!('?')])
+}
+
+fn parse_lt(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`<`"), &[punct!('<')])
+}
+
+fn parse_gt(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`>`"), &[punct!('>')])
+}
+
 fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
     let expectation = match delimiter {
         GroupDelimiter::Brace => intern!("`{`"),
@@ -175,12 +187,16 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fm
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
 
-    let path = AstMultiPath::parse(&mut c);
+    let ty = AstType::parse(&mut c);
+    if ty.is_none() {
+        c.stuck(|_| ());
+    }
+
     if !c.expect(intern!("end of file"), |c| c.next().is_none()) {
         c.stuck(|_| ());
     }
 
-    path
+    ty
 }
 
 // === Paths === //
@@ -303,5 +319,104 @@ impl AstMultiPath {
         };
 
         Self { base, imports }
+    }
+}
+
+// === Types === //
+
+impl AstType {
+    pub fn parse(c: &mut TokenSequence) -> Option<Self> {
+        // Match base
+        let mut base = Self::parse_base(c)?;
+
+        // Match suffixes
+        loop {
+            // Match option
+            if parse_question(c).is_some() {
+                base = Self {
+                    kind: AstTypeKind::Option,
+                    generics: Box::from_iter([base]),
+                };
+                continue;
+            }
+
+            break;
+        }
+
+        Some(base)
+    }
+
+    fn parse_base(c: &mut TokenSequence) -> Option<Self> {
+        let start = c.next_span();
+
+        // Match path
+        let path = AstPath::parse(c);
+        if !path.is_empty() {
+            // Match optional generics
+            let mut parts = Vec::new();
+
+            let generic_start = c.next_span();
+            if parse_lt(c).is_some() {
+                let _wp = c
+                    .context()
+                    .while_parsing(generic_start, intern!("generic list"));
+
+                // Match generic list
+                loop {
+                    // Match type
+                    let Some(path) = AstType::parse(c) else {
+                        break;
+                    };
+                    parts.push(path);
+
+                    // Match comma
+                    if parse_comma(c).is_none() {
+                        break;
+                    }
+                }
+
+                // Match close generic
+                if parse_gt(c).is_none() {
+                    c.stuck(|_| ());
+                }
+            }
+
+            return Some(Self {
+                kind: AstTypeKind::Adt(path),
+                generics: Box::from_iter(parts),
+            });
+        }
+
+        // Match tuple
+        if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
+            let _wp = c.context().while_parsing(start, intern!("tuple type"));
+            let mut c = c.enter(group.cursor());
+            let mut parts = Vec::new();
+
+            loop {
+                // Match type
+                let Some(ty) = AstType::parse(&mut c) else {
+                    break;
+                };
+                parts.push(ty);
+
+                // Match comma
+                if parse_comma(&mut c).is_none() {
+                    break;
+                }
+            }
+
+            // Match EOS
+            if !c.expect(intern!(")"), |c| c.next().is_none()) {
+                c.stuck(|_| ());
+            }
+
+            return Some(Self {
+                kind: AstTypeKind::Tuple,
+                generics: Box::from_iter(parts),
+            });
+        }
+
+        None
     }
 }

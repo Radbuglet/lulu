@@ -67,8 +67,15 @@ impl AstPathPart {
 
 #[derive(Debug)]
 pub struct AstType {
-    pub adt_or_name: AstPath,
+    pub kind: AstTypeKind,
     pub generics: Box<[AstType]>,
+}
+
+#[derive(Debug)]
+pub enum AstTypeKind {
+    Tuple,
+    Option,
+    Adt(AstPath),
 }
 
 // === Expressions === //

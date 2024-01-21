@@ -18,9 +18,7 @@ impl FileData {
     pub fn new(path: String, data: String) -> impl CyclicCtor<Self> {
         |me, _| {
             let mut line_start_offsets = Vec::new();
-            if !data.is_empty() {
-                line_start_offsets.push(0);
-            }
+            line_start_offsets.push(0);
 
             let mut reader = NormalizedStrIterator::new(&data);
 

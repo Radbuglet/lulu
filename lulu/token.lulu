@@ -1,1 +1,1 @@
-self::{foo::{whee::woo::{@self}}}
+Foo<u32, (u32, i32, char)>?
