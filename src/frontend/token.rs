@@ -218,6 +218,14 @@ macro_rules! define_puncts {
 					$(Self::$name => $char),*
 				}
 			}
+
+			pub const fn as_char_name(self) -> Symbol {
+				const NAMES: [Symbol; 0 $(+ {let _ = $char; 1})*] = [
+					$(Symbol!("`" $char "`"),)*
+				];
+
+				NAMES[self as usize]
+			}
 		}
 
 		impl fmt::Debug for $enum_name {
@@ -692,7 +700,7 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
             }) {}
 
             // Match pipe
-            let _ = c.expect(Symbol!("|"), |c| c.next() == Some('|'));
+            let _ = c.expect(Symbol!("`|`"), |c| c.next() == Some('|'));
 
             return None;
         }

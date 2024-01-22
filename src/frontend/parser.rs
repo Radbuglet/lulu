@@ -160,36 +160,8 @@ fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
     parse_puncts(c, Symbol!("`::`"), &[punct!(':'), punct!(':')])
 }
 
-fn parse_asterisk(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`*`"), &[punct!('*')])
-}
-
-fn parse_comma(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`,`"), &[punct!(',')])
-}
-
-fn parse_question(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`?`"), &[punct!('?')])
-}
-
-fn parse_lt(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`<`"), &[punct!('<')])
-}
-
-fn parse_gt(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`>`"), &[punct!('>')])
-}
-
-fn parse_period(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`.`"), &[punct!('.')])
-}
-
-fn parse_plus(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`+`"), &[punct!('+')])
-}
-
-fn parse_minus(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`-`"), &[punct!('-')])
+fn parse_punct(c: &mut TokenSequence, char: PunctChar) -> Option<Span> {
+    parse_puncts(c, char.as_char_name(), &[char])
 }
 
 fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
@@ -298,7 +270,7 @@ impl AstMultiPath {
                 // Match path
                 loop {
                     // Match separating comma
-                    if !parts.is_empty() && parse_comma(&mut c).is_none() {
+                    if !parts.is_empty() && parse_punct(&mut c, punct!(',')).is_none() {
                         break;
                     }
 
@@ -316,7 +288,7 @@ impl AstMultiPath {
                 }
 
                 AstMultiPathList::List(Box::from_iter(parts))
-            } else if parse_asterisk(c).is_some() {
+            } else if parse_punct(c, punct!('*')).is_some() {
                 AstMultiPathList::Wildcard
             } else {
                 c.stuck(|_| ());
@@ -340,7 +312,7 @@ impl AstType {
         // Match suffixes
         loop {
             // Match option
-            if parse_question(c).is_some() {
+            if parse_punct(c, punct!('?')).is_some() {
                 base = Self {
                     kind: AstTypeKind::Option,
                     generics: Box::from_iter([base]),
@@ -364,7 +336,7 @@ impl AstType {
             let mut parts = Vec::new();
 
             let generic_start = c.next_span();
-            if parse_lt(c).is_some() {
+            if parse_punct(c, punct!('<')).is_some() {
                 let _wp = c
                     .context()
                     .while_parsing(generic_start, Symbol!("generic list"));
@@ -378,13 +350,13 @@ impl AstType {
                     parts.push(path);
 
                     // Match comma
-                    if parse_comma(c).is_none() {
+                    if parse_punct(c, punct!(',')).is_none() {
                         break;
                     }
                 }
 
                 // Match close generic
-                if parse_gt(c).is_none() {
+                if parse_punct(c, punct!('>')).is_none() {
                     c.stuck(|_| ());
                 }
             }
@@ -409,7 +381,7 @@ impl AstType {
                 parts.push(ty);
 
                 // Match comma
-                if parse_comma(&mut c).is_none() {
+                if parse_punct(&mut c, punct!(',')).is_none() {
                     break;
                 }
             }
@@ -443,7 +415,7 @@ impl AstExpr {
                     .is_some_and(|v| matches!(v, AstExpr::BinOp(_) | AstExpr::UnaryOp(_)))
             {
                 // Match dot expressions
-                if parse_period(c).is_some() {
+                if parse_punct(c, punct!('.')).is_some() {
                     let Some(field) = parse_identifier(c, Symbol!("member name")) else {
                         c.stuck(|_| ());
                         continue;
@@ -460,9 +432,9 @@ impl AstExpr {
                 }
 
                 // Match binary operators
-                let op = if parse_plus(c).is_some() {
+                let op = if parse_punct(c, punct!('+')).is_some() {
                     Some(AstBinOpKind::Add)
-                } else if parse_minus(c).is_some() {
+                } else if parse_punct(c, punct!('-')).is_some() {
                     Some(AstBinOpKind::Sub)
                 } else {
                     None
