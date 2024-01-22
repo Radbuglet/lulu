@@ -5,9 +5,9 @@ use std::{fmt, rc::Rc};
 
 use crate::util::{
     diag::{Diagnostic, DiagnosticReporter},
-    intern::{intern, Intern},
     parser::{ForkableCursor, ParseContext, ParseCursor, ParseSequence},
     span::{FileCursor, FileData, FileSequence, Span},
+    symbol::Symbol,
 };
 
 // === Tokens === //
@@ -158,7 +158,7 @@ impl GroupDelimiter {
 #[derive(Debug, Copy, Clone)]
 pub struct TokenStringLit {
     pub span: Span,
-    pub inner: Intern,
+    pub inner: Symbol,
 }
 
 // CharLit
@@ -172,14 +172,14 @@ pub struct TokenCharLit {
 #[derive(Debug, Copy, Clone)]
 pub struct TokenNumberLit {
     pub span: Span,
-    pub data: Intern,
+    pub data: Symbol,
 }
 
 // Ident
 #[derive(Debug, Copy, Clone)]
 pub struct TokenIdent {
     pub span: Span,
-    pub text: Intern,
+    pub text: Symbol,
     pub is_raw: bool,
 }
 
@@ -302,9 +302,9 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
 
     let _wp = 'wp_ctor: {
         Some(c.while_parsing(match delimiter {
-            GroupDelimiter::Brace => intern!("braced token group"),
-            GroupDelimiter::Bracket => intern!("bracketed token group"),
-            GroupDelimiter::Paren => intern!("parenthesized token group"),
+            GroupDelimiter::Brace => Symbol!("braced token group"),
+            GroupDelimiter::Bracket => Symbol!("bracketed token group"),
+            GroupDelimiter::Paren => Symbol!("parenthesized token group"),
             GroupDelimiter::File => break 'wp_ctor None,
         }))
     };
@@ -324,7 +324,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
         let curr_start = c.next_span();
 
         // Match whitespace
-        if c.expect(intern!("whitespace"), |c| {
+        if c.expect(Symbol!("whitespace"), |c| {
             c.next().is_some_and(char::is_whitespace)
         }) {
             continue;
@@ -399,7 +399,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
         }
 
         // Match raw identifier or punctuation
-        if c.expect(intern!("`@`"), |c| c.next() == Some('@')) {
+        if c.expect(Symbol!("`@`"), |c| c.next() == Some('@')) {
             // Match as raw identifier
             if let Some(ident) = parse_ident(c, curr_start, true) {
                 tokens.push(ident.into());
@@ -457,7 +457,7 @@ fn parse_group(c: &mut FileSequence, open_span: Span, delimiter: GroupDelimiter)
 }
 
 fn parse_line_comment(c: &mut FileSequence) -> bool {
-    if !c.expect(intern!("`//`"), |c| {
+    if !c.expect(Symbol!("`//`"), |c| {
         c.next() == Some('/') && c.next() == Some('/')
     }) {
         return false;
@@ -474,16 +474,16 @@ fn parse_line_comment(c: &mut FileSequence) -> bool {
 }
 
 fn parse_block_comment(c: &mut FileSequence) -> bool {
-    if !c.expect(intern!("`/*`"), |c| {
+    if !c.expect(Symbol!("`/*`"), |c| {
         c.next() == Some('/') && c.next() == Some('*')
     }) {
         return false;
     }
 
-    let _wp = c.while_parsing(intern!("block comment"));
+    let _wp = c.while_parsing(Symbol!("block comment"));
 
     loop {
-        if c.expect(intern!("`*/`"), |c| {
+        if c.expect(Symbol!("`*/`"), |c| {
             c.next() == Some('*') && c.next() == Some('/')
         }) {
             break;
@@ -493,7 +493,7 @@ fn parse_block_comment(c: &mut FileSequence) -> bool {
             continue;
         }
 
-        if c.expect(intern!("comment character"), |c| c.next().is_some()) {
+        if c.expect(Symbol!("comment character"), |c| c.next().is_some()) {
             continue;
         }
 
@@ -505,15 +505,15 @@ fn parse_block_comment(c: &mut FileSequence) -> bool {
 }
 
 fn parse_open_delimiter(c: &mut FileSequence) -> Option<GroupDelimiter> {
-    if c.expect(intern!("`{`"), |c| c.next() == Some('{')) {
+    if c.expect(Symbol!("`{`"), |c| c.next() == Some('{')) {
         return Some(GroupDelimiter::Brace);
     }
 
-    if c.expect(intern!("`[`"), |c| c.next() == Some('[')) {
+    if c.expect(Symbol!("`[`"), |c| c.next() == Some('[')) {
         return Some(GroupDelimiter::Bracket);
     }
 
-    if c.expect(intern!("`(`"), |c| c.next() == Some('(')) {
+    if c.expect(Symbol!("`(`"), |c| c.next() == Some('(')) {
         return Some(GroupDelimiter::Paren);
     }
 
@@ -521,19 +521,19 @@ fn parse_open_delimiter(c: &mut FileSequence) -> Option<GroupDelimiter> {
 }
 
 fn parse_close_delimiter(c: &mut FileSequence, expected: GroupDelimiter) -> Option<GroupDelimiter> {
-    if c.expect_covert(expected == GroupDelimiter::Brace, intern!("`}`"), |c| {
+    if c.expect_covert(expected == GroupDelimiter::Brace, Symbol!("`}`"), |c| {
         c.next() == Some('}')
     }) {
         return Some(GroupDelimiter::Brace);
     }
 
-    if c.expect_covert(expected == GroupDelimiter::Bracket, intern!("`]`"), |c| {
+    if c.expect_covert(expected == GroupDelimiter::Bracket, Symbol!("`]`"), |c| {
         c.next() == Some(']')
     }) {
         return Some(GroupDelimiter::Bracket);
     }
 
-    if c.expect_covert(expected == GroupDelimiter::Paren, intern!("`)`"), |c| {
+    if c.expect_covert(expected == GroupDelimiter::Paren, Symbol!("`)`"), |c| {
         c.next() == Some(')')
     }) {
         return Some(GroupDelimiter::Paren);
@@ -541,7 +541,7 @@ fn parse_close_delimiter(c: &mut FileSequence, expected: GroupDelimiter) -> Opti
 
     if c.expect_covert(
         expected == GroupDelimiter::File,
-        intern!("end of file"),
+        Symbol!("end of file"),
         |c| c.next().is_none(),
     ) {
         return Some(GroupDelimiter::File);
@@ -551,7 +551,7 @@ fn parse_close_delimiter(c: &mut FileSequence, expected: GroupDelimiter) -> Opti
 }
 
 fn parse_punct_char(c: &mut FileSequence, allow_period: bool) -> Option<PunctChar> {
-    c.expect(intern!("punctuation"), |c| {
+    c.expect(Symbol!("punctuation"), |c| {
         c.next()
             .and_then(PunctChar::from_char)
             .filter(|&c| allow_period || c != punct!('.'))
@@ -562,12 +562,12 @@ fn parse_ident(c: &mut FileSequence, start: Span, is_raw: bool) -> Option<TokenI
     let mut builder = String::new();
 
     // Match first character
-    builder.push(c.expect(intern!("identifier"), |c| {
+    builder.push(c.expect(Symbol!("identifier"), |c| {
         c.next().filter(|c| c.is_xid_start())
     })?);
 
     // Match subsequent characters
-    while let Some(ch) = c.expect(intern!("identifier"), |c| {
+    while let Some(ch) = c.expect(Symbol!("identifier"), |c| {
         c.next().filter(|c| c.is_xid_continue())
     }) {
         builder.push(ch);
@@ -575,17 +575,17 @@ fn parse_ident(c: &mut FileSequence, start: Span, is_raw: bool) -> Option<TokenI
 
     Some(TokenIdent {
         span: start.until(c.next_span()),
-        text: Intern::new(builder),
+        text: Symbol::new(builder),
         is_raw,
     })
 }
 
 fn parse_string_literal(c: &mut FileSequence) -> Option<TokenStringLit> {
     let start = c.next_span();
-    let _wp = c.while_parsing(intern!("string literal"));
+    let _wp = c.while_parsing(Symbol!("string literal"));
 
     // Match opening quote
-    if !c.expect(intern!("`\"`"), |c| c.next() == Some('"')) {
+    if !c.expect(Symbol!("`\"`"), |c| c.next() == Some('"')) {
         return None;
     }
 
@@ -593,7 +593,7 @@ fn parse_string_literal(c: &mut FileSequence) -> Option<TokenStringLit> {
     let mut builder = String::new();
     loop {
         // Match character escape
-        if c.expect(intern!("`\\`"), |c| c.next() == Some('\\')) {
+        if c.expect(Symbol!("`\\`"), |c| c.next() == Some('\\')) {
             if let Some(esc) = parse_char_escape(c, true) {
                 builder.push(esc);
             }
@@ -602,12 +602,12 @@ fn parse_string_literal(c: &mut FileSequence) -> Option<TokenStringLit> {
         }
 
         // Match closing quote
-        if c.expect(intern!("`\"`"), |c| c.next() == Some('"')) {
+        if c.expect(Symbol!("`\"`"), |c| c.next() == Some('"')) {
             break;
         }
 
         // Match anything but the EOF
-        if let Some(char) = c.expect(intern!("string character"), |c| c.next()) {
+        if let Some(char) = c.expect(Symbol!("string character"), |c| c.next()) {
             builder.push(char);
             continue;
         }
@@ -619,7 +619,7 @@ fn parse_string_literal(c: &mut FileSequence) -> Option<TokenStringLit> {
 
     Some(TokenStringLit {
         span: start.until(c.next_span()),
-        inner: Intern::new(builder),
+        inner: Symbol::new(builder),
     })
 }
 
@@ -627,21 +627,21 @@ fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
     let start = c.next_span();
 
     // Match opening quote
-    if !c.expect(intern!("`'`"), |c| c.next() == Some('\'')) {
+    if !c.expect(Symbol!("`'`"), |c| c.next() == Some('\'')) {
         return None;
     }
 
-    let _wp = c.while_parsing(intern!("character literal"));
+    let _wp = c.while_parsing(Symbol!("character literal"));
 
     // Match inner character
     let ch = 'parse: {
         // Match character escape
-        if c.expect(intern!("`\\`"), |c| c.next() == Some('\\')) {
+        if c.expect(Symbol!("`\\`"), |c| c.next() == Some('\\')) {
             break 'parse parse_char_escape(c, false);
         }
 
         // Match anything but an EOF, a newline, or a closing quote
-        if let Some(char) = c.expect(intern!("string character"), |c| {
+        if let Some(char) = c.expect(Symbol!("string character"), |c| {
             c.next().filter(|&c| c != '\'' && c != '\n')
         }) {
             break 'parse Some(char);
@@ -666,7 +666,7 @@ fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
     };
 
     // Match closing quote
-    if !c.expect(intern!("`'`"), |c| c.next() == Some('\'')) {
+    if !c.expect(Symbol!("`'`"), |c| c.next() == Some('\'')) {
         // Otherwise, we got stuck.
         c.stuck(|_| ());
 
@@ -681,18 +681,18 @@ fn parse_char_literal(c: &mut FileSequence) -> Option<TokenCharLit> {
 
 fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char> {
     let esc_start = c.next_span();
-    let _wp = c.while_parsing(intern!("character escape code"));
+    let _wp = c.while_parsing(Symbol!("character escape code"));
 
     // Match multiline escape
     if allow_multiline {
-        if c.expect(intern!("newline"), |c| c.next() == Some('\n')) {
+        if c.expect(Symbol!("newline"), |c| c.next() == Some('\n')) {
             // Match leading whitespace
-            while c.expect(intern!("escaped space"), |c| {
+            while c.expect(Symbol!("escaped space"), |c| {
                 c.next().is_some_and(|c| c.is_whitespace())
             }) {}
 
             // Match pipe
-            let _ = c.expect(intern!("|"), |c| c.next() == Some('|'));
+            let _ = c.expect(Symbol!("|"), |c| c.next() == Some('|'));
 
             return None;
         }
@@ -705,14 +705,14 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     // Match simple escapes
     for (expected, ch, decoded) in [
         // Quotes
-        (intern!("`\"`"), '"', '"'),
-        (intern!("`'`"), '\'', '\''),
+        (Symbol!("`\"`"), '"', '"'),
+        (Symbol!("`'`"), '\'', '\''),
         // ASCII
-        (intern!("`n`"), 'n', '\n'),
-        (intern!("`r`"), 'r', '\r'),
-        (intern!("`t`"), 't', '\t'),
-        (intern!("`\\`"), '\\', '\\'),
-        (intern!("`0`"), '0', '0'),
+        (Symbol!("`n`"), 'n', '\n'),
+        (Symbol!("`r`"), 'r', '\r'),
+        (Symbol!("`t`"), 't', '\t'),
+        (Symbol!("`\\`"), '\\', '\\'),
+        (Symbol!("`0`"), '0', '0'),
     ] {
         if c.expect(expected, |c| c.next() == Some(ch)) {
             return Some(decoded);
@@ -720,11 +720,11 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     }
 
     // Match ASCII code escapes
-    if c.expect(intern!("`x`"), |c| c.next() == Some('x')) {
-        let _wp = c.while_parsing(intern!("ASCII escape code"));
+    if c.expect(Symbol!("`x`"), |c| c.next() == Some('x')) {
+        let _wp = c.while_parsing(Symbol!("ASCII escape code"));
         let hex_start = c.next_span();
 
-        let Some((a, b)) = c.expect(intern!("two hexadecimal digits"), |c| {
+        let Some((a, b)) = c.expect(Symbol!("two hexadecimal digits"), |c| {
             match (c.next(), c.next()) {
                 (Some(a), Some(b)) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => {
                     Some((a, b))
@@ -756,11 +756,11 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
     }
 
     // Match Unicode escapes
-    if c.expect(intern!("`u`"), |c| c.next() == Some('u')) {
-        let _wp = c.while_parsing(intern!("Unicode escape sequence"));
+    if c.expect(Symbol!("`u`"), |c| c.next() == Some('u')) {
+        let _wp = c.while_parsing(Symbol!("Unicode escape sequence"));
 
         // Match opening brace
-        if !c.expect(intern!("`{`"), |c| c.next() == Some('{')) {
+        if !c.expect(Symbol!("`{`"), |c| c.next() == Some('{')) {
             c.stuck(|_| ());
             return None;
         }
@@ -769,7 +769,7 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
         let mut digits = String::new();
         while digits.len() < 6 {
             // Match a hexadecimal digit
-            if let Some(digit) = c.expect(intern!("hexadecimal digit"), |c| {
+            if let Some(digit) = c.expect(Symbol!("hexadecimal digit"), |c| {
                 c.next().filter(char::is_ascii_hexdigit)
             }) {
                 digits.push(digit);
@@ -777,7 +777,7 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
             }
 
             // Match an underscore
-            if c.expect(intern!("`_`"), |c| c.next() == Some('_')) {
+            if c.expect(Symbol!("`_`"), |c| c.next() == Some('_')) {
                 continue;
             }
 
@@ -785,7 +785,7 @@ fn parse_char_escape(c: &mut FileSequence, allow_multiline: bool) -> Option<char
         }
 
         // If we have an insufficient number of digits or fail to match a closing `}`, we're stuck.
-        if digits.is_empty() || !c.expect(intern!("`}`"), |c| c.next() == Some('}')) {
+        if digits.is_empty() || !c.expect(Symbol!("`}`"), |c| c.next() == Some('}')) {
             c.hint_stuck_if_passes("expected at least 1 hexadecimal digit", |c| {
                 c.next() == Some('}')
             });
@@ -833,20 +833,20 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
     let mut builder = String::new();
 
     // Match first digit
-    let digit = c.expect(intern!("numeric literal"), |c| {
+    let digit = c.expect(Symbol!("numeric literal"), |c| {
         c.next().filter(|c| c.is_ascii_digit())
     })?;
     builder.push(digit);
 
     // Natch prefix
     let prefix = if digit == '0' {
-        if c.expect(intern!("`x`"), |c| c.next() == Some('x')) {
+        if c.expect(Symbol!("`x`"), |c| c.next() == Some('x')) {
             builder.push('x');
             DigitKind::Hexadecimal
-        } else if c.expect(intern!("`b`"), |c| c.next() == Some('b')) {
+        } else if c.expect(Symbol!("`b`"), |c| c.next() == Some('b')) {
             builder.push('b');
             DigitKind::Binary
-        } else if c.expect(intern!("`o`"), |c| c.next() == Some('o')) {
+        } else if c.expect(Symbol!("`o`"), |c| c.next() == Some('o')) {
             builder.push('o');
             DigitKind::Octal
         } else {
@@ -866,7 +866,7 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
 
     // Match fractional part
     if prefix == DigitKind::Decimal {
-        if c.expect(intern!("`.`"), |c| c.next() == Some('.')) {
+        if c.expect(Symbol!("`.`"), |c| c.next() == Some('.')) {
             builder.push('.');
 
             // Match zero or more fractional digits
@@ -884,11 +884,11 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
 
     // Match exponential part
     if prefix == DigitKind::Decimal {
-        if c.expect(intern!("`e`"), |c| matches!(c.next(), Some('e' | 'E'))) {
+        if c.expect(Symbol!("`e`"), |c| matches!(c.next(), Some('e' | 'E'))) {
             // Match sign
-            if c.expect(intern!("`+`"), |c| c.next() == Some('+')) {
+            if c.expect(Symbol!("`+`"), |c| c.next() == Some('+')) {
                 builder.push('+');
-            } else if c.expect(intern!("`-`"), |c| c.next() == Some('-')) {
+            } else if c.expect(Symbol!("`-`"), |c| c.next() == Some('-')) {
                 builder.push('-');
             };
 
@@ -910,7 +910,7 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
         "usize", "isize", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128",
         "f32", "f64",
     ];
-    if let Some(suffix) = c.expect(intern!("numeric type suffix"), |c| {
+    if let Some(suffix) = c.expect(Symbol!("numeric type suffix"), |c| {
         suffixes
             .iter()
             .find(|e| c.lookahead(|c| e.chars().all(|e| c.next() == Some(e))))
@@ -931,7 +931,7 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
 
     Some(TokenNumberLit {
         span: start.until(c.next_span()),
-        data: Intern::new(builder),
+        data: Symbol::new(builder),
     })
 }
 
@@ -958,16 +958,16 @@ fn parse_digits(c: &mut FileSequence, builder: &mut String, kind: DigitKind) {
     loop {
         // Match digit
         if let Some(matched) = match kind {
-            DigitKind::Hexadecimal => c.expect(intern!("decimal digit"), |c| {
+            DigitKind::Hexadecimal => c.expect(Symbol!("decimal digit"), |c| {
                 c.next().filter(|c| c.is_ascii_hexdigit())
             }),
-            DigitKind::Binary => c.expect(intern!("binary digit"), |c| {
+            DigitKind::Binary => c.expect(Symbol!("binary digit"), |c| {
                 c.next().filter(|&c| matches!(c, '0'..='1'))
             }),
-            DigitKind::Octal => c.expect(intern!("octal digit"), |c| {
+            DigitKind::Octal => c.expect(Symbol!("octal digit"), |c| {
                 c.next().filter(|&c| matches!(c, '0'..='7'))
             }),
-            DigitKind::Decimal => c.expect(intern!("decimal digit"), |c| {
+            DigitKind::Decimal => c.expect(Symbol!("decimal digit"), |c| {
                 c.next().filter(|c| c.is_ascii_digit())
             }),
         } {
@@ -981,7 +981,7 @@ fn parse_digits(c: &mut FileSequence, builder: &mut String, kind: DigitKind) {
         }
 
         // Match underscore
-        if c.expect(intern!("`_`"), |c| c.next() == Some('_')) {
+        if c.expect(Symbol!("`_`"), |c| c.next() == Some('_')) {
             continue;
         }
 

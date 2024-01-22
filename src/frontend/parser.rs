@@ -2,9 +2,9 @@ use crate::{
     frontend::ast::AstPathPart,
     util::{
         diag::DiagnosticReporter,
-        intern::{intern, Intern},
         parser::{ParseContext, ParseCursor},
         span::Span,
+        symbol::Symbol,
     },
 };
 
@@ -29,7 +29,7 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fm
 
     let expr = AstExpr::parse(&mut c);
 
-    if !c.expect(intern!("end of file"), |c| c.next().is_none()) {
+    if !c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
         c.stuck(|_| ());
     }
 
@@ -53,40 +53,36 @@ macro_rules! define_keywords {
 		}
 
 		impl $enum_name {
-			pub fn from_intern(c: Intern) -> Option<Self> {
+			pub fn from_sym(c: Symbol) -> Option<Self> {
 				thread_local! {
-					static INTERN_MAP: FxHashMap<Intern, $enum_name> = FxHashMap::from_iter([
-						$((intern!($text), $enum_name::$name),)*
+					static SYM_MAP: FxHashMap<Symbol, $enum_name> = FxHashMap::from_iter([
+						$((Symbol!($text), $enum_name::$name),)*
 					]);
 				}
 
-				INTERN_MAP.with(|v| v.get(&c).copied())
+				SYM_MAP.with(|v| v.get(&c).copied())
 			}
 
-			pub fn to_intern(self) -> Intern {
-				thread_local! {
-					static INTERN_MAP: [Intern; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
-						$(intern!($text),)*
-					];
-				}
+			pub fn to_sym(self) -> Symbol {
+				const SYM_MAP: [Symbol; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
+					$(Symbol!($text),)*
+				];
 
-				INTERN_MAP.with(|v| v[self as usize])
+				SYM_MAP[self as usize]
 			}
 
-			pub fn to_name_intern(self) -> Intern {
-				thread_local! {
-					static INTERN_MAP: [Intern; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
-						$(intern!(format!("`{}`", $text)),)*
-					];
-				}
+			pub fn to_name_sym(self) -> Symbol {
+				const SYM_MAP: [Symbol; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
+					$(Symbol!("`" $text "`"),)*
+				];
 
-				INTERN_MAP.with(|v| v[self as usize])
+				SYM_MAP[self as usize]
 			}
 		}
 
 		impl fmt::Debug for $enum_name {
 			fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-				write!(f, "{:?}", self.to_intern())
+				write!(f, "{:?}", self.to_sym())
 			}
 		}
 	};
@@ -107,12 +103,12 @@ define_keywords! {
 
 // === Parsing Helpers === //
 
-fn parse_identifier(c: &mut TokenSequence, name: Intern) -> Option<TokenIdent> {
+fn parse_identifier(c: &mut TokenSequence, name: Symbol) -> Option<TokenIdent> {
     let ident = c.expect(name, |c| {
         c.next()
             .and_then(Token::as_ident)
             .copied()
-            .filter(|ident| ident.is_raw || AstKeyword::from_intern(ident.text).is_none())
+            .filter(|ident| ident.is_raw || AstKeyword::from_sym(ident.text).is_none())
     });
 
     if ident.is_none() {
@@ -126,9 +122,9 @@ fn parse_identifier(c: &mut TokenSequence, name: Intern) -> Option<TokenIdent> {
 }
 
 fn parse_keyword(c: &mut TokenSequence, kw: AstKeyword) -> Option<TokenIdent> {
-    let kw_text = kw.to_intern();
+    let kw_text = kw.to_sym();
 
-    c.expect(kw.to_name_intern(), |c| {
+    c.expect(kw.to_name_sym(), |c| {
         c.next()
             .and_then(Token::as_ident)
             .copied()
@@ -136,7 +132,7 @@ fn parse_keyword(c: &mut TokenSequence, kw: AstKeyword) -> Option<TokenIdent> {
     })
 }
 
-fn parse_puncts(c: &mut TokenSequence, name: Intern, puncts: &[PunctChar]) -> Option<Span> {
+fn parse_puncts(c: &mut TokenSequence, name: Symbol, puncts: &[PunctChar]) -> Option<Span> {
     c.expect(name, |c| {
         let start = c.next_span();
         let mut last = start;
@@ -161,46 +157,46 @@ fn parse_puncts(c: &mut TokenSequence, name: Intern, puncts: &[PunctChar]) -> Op
 }
 
 fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`::`"), &[punct!(':'), punct!(':')])
+    parse_puncts(c, Symbol!("`::`"), &[punct!(':'), punct!(':')])
 }
 
 fn parse_asterisk(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`*`"), &[punct!('*')])
+    parse_puncts(c, Symbol!("`*`"), &[punct!('*')])
 }
 
 fn parse_comma(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`,`"), &[punct!(',')])
+    parse_puncts(c, Symbol!("`,`"), &[punct!(',')])
 }
 
 fn parse_question(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`?`"), &[punct!('?')])
+    parse_puncts(c, Symbol!("`?`"), &[punct!('?')])
 }
 
 fn parse_lt(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`<`"), &[punct!('<')])
+    parse_puncts(c, Symbol!("`<`"), &[punct!('<')])
 }
 
 fn parse_gt(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`>`"), &[punct!('>')])
+    parse_puncts(c, Symbol!("`>`"), &[punct!('>')])
 }
 
 fn parse_period(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`.`"), &[punct!('.')])
+    parse_puncts(c, Symbol!("`.`"), &[punct!('.')])
 }
 
 fn parse_plus(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`+`"), &[punct!('+')])
+    parse_puncts(c, Symbol!("`+`"), &[punct!('+')])
 }
 
 fn parse_minus(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, intern!("`-`"), &[punct!('-')])
+    parse_puncts(c, Symbol!("`-`"), &[punct!('-')])
 }
 
 fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
     let expectation = match delimiter {
-        GroupDelimiter::Brace => intern!("`{`"),
-        GroupDelimiter::Bracket => intern!("`[`"),
-        GroupDelimiter::Paren => intern!("`(`"),
+        GroupDelimiter::Brace => Symbol!("`{`"),
+        GroupDelimiter::Bracket => Symbol!("`[`"),
+        GroupDelimiter::Paren => Symbol!("`(`"),
         GroupDelimiter::File => unreachable!(),
     };
 
@@ -215,7 +211,7 @@ fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Opti
 
 impl AstPath {
     pub fn parse(c: &mut TokenSequence) -> Self {
-        let _wp = c.while_parsing(intern!("path"));
+        let _wp = c.while_parsing(Symbol!("path"));
         let (expecting_part, me) = Self::parse_inner(c, true);
         if expecting_part {
             c.stuck(|_| ());
@@ -255,7 +251,7 @@ impl AstPath {
                     }
                 }
                 Phase::WaitingForPart => {
-                    if let Some(part) = parse_identifier(c, intern!("path part")).or_else(|| {
+                    if let Some(part) = parse_identifier(c, Symbol!("path part")).or_else(|| {
                         is_root
                             .then(|| parse_keyword(c, AstKeyword::Super))
                             .flatten()
@@ -295,7 +291,7 @@ impl AstMultiPath {
             let start_span = c.next_span();
 
             if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
-                let _wp = c.context().while_parsing(start_span, intern!("path tree"));
+                let _wp = c.context().while_parsing(start_span, Symbol!("path tree"));
                 let mut parts = Vec::new();
                 let mut c = c.enter(group.cursor());
 
@@ -315,7 +311,7 @@ impl AstMultiPath {
                 }
 
                 // Match EOS
-                if !c.expect(intern!("`}`"), |c| c.next().is_none()) {
+                if !c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
                     c.stuck(|_| ());
                 }
 
@@ -371,7 +367,7 @@ impl AstType {
             if parse_lt(c).is_some() {
                 let _wp = c
                     .context()
-                    .while_parsing(generic_start, intern!("generic list"));
+                    .while_parsing(generic_start, Symbol!("generic list"));
 
                 // Match generic list
                 loop {
@@ -401,7 +397,7 @@ impl AstType {
 
         // Match tuple
         if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
-            let _wp = c.context().while_parsing(start, intern!("tuple type"));
+            let _wp = c.context().while_parsing(start, Symbol!("tuple type"));
             let mut c = c.enter(group.cursor());
             let mut parts = Vec::new();
 
@@ -419,7 +415,7 @@ impl AstType {
             }
 
             // Match EOS
-            if !c.expect(intern!(")"), |c| c.next().is_none()) {
+            if !c.expect(Symbol!(")"), |c| c.next().is_none()) {
                 c.stuck(|_| ());
             }
 
@@ -448,7 +444,7 @@ impl AstExpr {
             {
                 // Match dot expressions
                 if parse_period(c).is_some() {
-                    let Some(field) = parse_identifier(c, intern!("member name")) else {
+                    let Some(field) = parse_identifier(c, Symbol!("member name")) else {
                         c.stuck(|_| ());
                         continue;
                     };

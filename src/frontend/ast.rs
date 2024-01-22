@@ -1,6 +1,6 @@
 use aunty::StrongObj;
 
-use crate::util::{intern::Intern, span::Span};
+use crate::util::{span::Span, symbol::Symbol};
 
 use super::{parser::AstKeyword, token::TokenIdent};
 
@@ -59,7 +59,7 @@ pub struct AstPathPart(pub TokenIdent);
 
 impl AstPathPart {
     pub fn is_super(&self) -> bool {
-        self.0.text == AstKeyword::Super.to_intern()
+        self.0.text == AstKeyword::Super.to_sym()
     }
 }
 
@@ -135,7 +135,7 @@ pub struct AstPathExpr {
 #[derive(Debug)]
 pub struct AstDotExpr {
     pub expr: AstExpr,
-    pub member: Intern,
+    pub member: Symbol,
 }
 
 #[derive(Debug)]

@@ -9,8 +9,8 @@ use rustc_hash::FxHashSet;
 
 use super::{
     diag::{Diagnostic, DiagnosticReporter},
-    intern::Intern,
     span::Span,
+    symbol::Symbol,
 };
 
 // === LookaheadResult === //
@@ -42,7 +42,7 @@ impl<T, E> LookaheadResult for Result<T, E> {
 #[derive(Debug, Clone)]
 pub struct ParseContext {
     diagnostics: Obj<DiagnosticReporter>,
-    while_parsing: RefCell<Vec<(Span, Intern)>>,
+    while_parsing: RefCell<Vec<(Span, Symbol)>>,
     got_stuck: Cell<bool>,
 }
 
@@ -64,7 +64,7 @@ impl ParseContext {
         }
     }
 
-    pub fn while_parsing(&self, starting_at: Span, what: Intern) -> WhileParsingGuard<'_> {
+    pub fn while_parsing(&self, starting_at: Span, what: Symbol) -> WhileParsingGuard<'_> {
         self.while_parsing.borrow_mut().push((starting_at, what));
 
         WhileParsingGuard {
@@ -86,7 +86,7 @@ impl ParseContext {
 #[must_use]
 pub struct WhileParsingGuard<'c> {
     cx: &'c ParseContext,
-    top: Intern,
+    top: Symbol,
 }
 
 impl Drop for WhileParsingGuard<'_> {
@@ -102,7 +102,7 @@ impl Drop for WhileParsingGuard<'_> {
 pub struct ParseSequence<'cx, I> {
     cx: &'cx ParseContext,
     cursor: I,
-    expectations: Vec<Intern>,
+    expectations: Vec<Symbol>,
     stuck_hints: Vec<(Span, String)>,
 }
 
@@ -111,7 +111,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
         self.cx.enter(cursor)
     }
 
-    pub fn while_parsing(&self, what: Intern) -> WhileParsingGuard<'cx>
+    pub fn while_parsing(&self, what: Symbol) -> WhileParsingGuard<'cx>
     where
         I: ParseCursor,
     {
@@ -131,7 +131,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
     pub fn expect_covert<R>(
         &mut self,
         visible: bool,
-        expectation: Intern,
+        expectation: Symbol,
         f: impl FnOnce(&mut I) -> R,
     ) -> R
     where
@@ -147,7 +147,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
         res
     }
 
-    pub fn expect<R>(&mut self, expectation: Intern, f: impl FnOnce(&mut I) -> R) -> R
+    pub fn expect<R>(&mut self, expectation: Symbol, f: impl FnOnce(&mut I) -> R) -> R
     where
         I: ParseCursor,
         R: LookaheadResult,

@@ -13,4 +13,5 @@ hashbrown = "0.14.3"
 log = "0.4.20"
 rustc-hash = "1.1.0"
 smallvec = "1.13.1"
+symbolique = { git = "https://github.com/Radbuglet/symbolique.git", rev = "6cdf57a96e339a9c634289b777e4a9ef6cb26388" }
 unicode-xid = "0.2.4"
