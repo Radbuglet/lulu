@@ -10,13 +10,31 @@ use crate::{
 
 use std::fmt;
 
-use aunty::Obj;
+use aunty::{Obj, StrongObj};
 use rustc_hash::FxHashMap;
 
 use super::{
-    ast::{AstMultiPath, AstMultiPathList, AstPath, AstPathPrefix, AstType, AstTypeKind},
+    ast::{
+        AstBinOpExpr, AstBinOpKind, AstDotExpr, AstExpr, AstMultiPath, AstMultiPathList, AstPath,
+        AstPathExpr, AstPathPrefix, AstType, AstTypeKind,
+    },
     token::{punct, GroupDelimiter, PunctChar, Token, TokenGroup, TokenIdent, TokenSequence},
 };
+
+// === Driver === //
+
+pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fmt::Debug {
+    let cx = ParseContext::new(diag);
+    let mut c = cx.enter(tokens.cursor());
+
+    let expr = AstExpr::parse(&mut c);
+
+    if !c.expect(intern!("end of file"), |c| c.next().is_none()) {
+        c.stuck(|_| ());
+    }
+
+    expr
+}
 
 // === Keywords === //
 
@@ -166,6 +184,18 @@ fn parse_gt(c: &mut TokenSequence) -> Option<Span> {
     parse_puncts(c, intern!("`>`"), &[punct!('>')])
 }
 
+fn parse_period(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`.`"), &[punct!('.')])
+}
+
+fn parse_plus(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`+`"), &[punct!('+')])
+}
+
+fn parse_minus(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, intern!("`-`"), &[punct!('-')])
+}
+
 fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
     let expectation = match delimiter {
         GroupDelimiter::Brace => intern!("`{`"),
@@ -179,24 +209,6 @@ fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Opti
             .and_then(Token::as_group)
             .filter(|g| g.delimiter == delimiter)
     })
-}
-
-// === Parsers === //
-
-pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fmt::Debug {
-    let cx = ParseContext::new(diag);
-    let mut c = cx.enter(tokens.cursor());
-
-    let ty = AstType::parse(&mut c);
-    if ty.is_none() {
-        c.stuck(|_| ());
-    }
-
-    if !c.expect(intern!("end of file"), |c| c.next().is_none()) {
-        c.stuck(|_| ());
-    }
-
-    ty
 }
 
 // === Paths === //
@@ -418,5 +430,70 @@ impl AstType {
         }
 
         None
+    }
+}
+
+// === Expression === //
+
+impl AstExpr {
+    pub fn parse(c: &mut TokenSequence) -> Self {
+        // We begin by parsing a bunch of expression fragments.
+        let mut frags = Vec::<AstExpr>::new();
+
+        loop {
+            if !frags.is_empty()
+                && !frags
+                    .last()
+                    .is_some_and(|v| matches!(v, AstExpr::BinOp(_) | AstExpr::UnaryOp(_)))
+            {
+                // Match dot expressions
+                if parse_period(c).is_some() {
+                    let Some(field) = parse_identifier(c, intern!("member name")) else {
+                        c.stuck(|_| ());
+                        continue;
+                    };
+
+                    let prev = frags.pop().unwrap();
+                    frags.push(
+                        StrongObj::new(AstDotExpr {
+                            expr: prev,
+                            member: field.text,
+                        })
+                        .into(),
+                    );
+                }
+
+                // Match binary operators
+                let op = if parse_plus(c).is_some() {
+                    Some(AstBinOpKind::Add)
+                } else if parse_minus(c).is_some() {
+                    Some(AstBinOpKind::Sub)
+                } else {
+                    None
+                };
+
+                if let Some(op) = op {
+                    frags.push(
+                        StrongObj::new(AstBinOpExpr {
+                            kind: op,
+                            lhs: AstExpr::Placeholder,
+                            rhs: AstExpr::Placeholder,
+                        })
+                        .into(),
+                    );
+                    continue;
+                }
+            } else {
+                let path = AstPath::parse(c);
+                if !path.is_empty() {
+                    frags.push(StrongObj::new(AstPathExpr { path }).into());
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        frags.pop().unwrap_or(AstExpr::Placeholder)
     }
 }

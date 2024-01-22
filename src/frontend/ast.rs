@@ -82,44 +82,76 @@ pub enum AstTypeKind {
 
 #[derive(Debug, Clone)]
 pub enum AstExpr {
+    Placeholder,
     Path(StrongObj<AstPathExpr>),
-    Dot(StrongObj<AstCallExpr>),
+    Dot(StrongObj<AstDotExpr>),
     Call(StrongObj<AstCallExpr>),
     Index(StrongObj<AstIndexExpr>),
-    BinOp(StrongObj<AstBinOp>),
-    UnaryOp(StrongObj<AstUnaryOp>),
+    BinOp(StrongObj<AstBinOpExpr>),
+    UnaryOp(StrongObj<AstUnaryOpExpr>),
+}
+
+impl From<StrongObj<AstPathExpr>> for AstExpr {
+    fn from(value: StrongObj<AstPathExpr>) -> Self {
+        Self::Path(value)
+    }
+}
+
+impl From<StrongObj<AstDotExpr>> for AstExpr {
+    fn from(value: StrongObj<AstDotExpr>) -> Self {
+        Self::Dot(value)
+    }
+}
+
+impl From<StrongObj<AstCallExpr>> for AstExpr {
+    fn from(value: StrongObj<AstCallExpr>) -> Self {
+        Self::Call(value)
+    }
+}
+
+impl From<StrongObj<AstIndexExpr>> for AstExpr {
+    fn from(value: StrongObj<AstIndexExpr>) -> Self {
+        Self::Index(value)
+    }
+}
+
+impl From<StrongObj<AstBinOpExpr>> for AstExpr {
+    fn from(value: StrongObj<AstBinOpExpr>) -> Self {
+        Self::BinOp(value)
+    }
+}
+
+impl From<StrongObj<AstUnaryOpExpr>> for AstExpr {
+    fn from(value: StrongObj<AstUnaryOpExpr>) -> Self {
+        Self::UnaryOp(value)
+    }
 }
 
 #[derive(Debug)]
 pub struct AstPathExpr {
-    pub span: Span,
     pub path: AstPath,
 }
 
 #[derive(Debug)]
 pub struct AstDotExpr {
-    pub span: Span,
     pub expr: AstExpr,
     pub member: Intern,
 }
 
 #[derive(Debug)]
 pub struct AstCallExpr {
-    pub span: Span,
     pub expr: AstExpr,
     pub args: Box<[AstExpr]>,
 }
 
 #[derive(Debug)]
 pub struct AstIndexExpr {
-    pub span: Span,
     pub expr: AstExpr,
     pub indexer: AstExpr,
 }
 
 #[derive(Debug)]
-pub struct AstBinOp {
-    pub span: Span,
+pub struct AstBinOpExpr {
     pub kind: AstBinOpKind,
     pub lhs: AstExpr,
     pub rhs: AstExpr,
@@ -141,7 +173,7 @@ pub enum AstBinOpKind {
 }
 
 #[derive(Debug)]
-pub struct AstUnaryOp {
+pub struct AstUnaryOpExpr {
     pub span: Span,
     pub kind: AstUnaryOpKind,
     pub expr: AstExpr,
