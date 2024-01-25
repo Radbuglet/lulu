@@ -579,50 +579,36 @@ impl AstExpr {
     //
     // ## Proof of Correctness
     //
-    // We know that each call to `parse_inner` corresponds to the inclusion of a left and right
-    // parenthesis where it starts and ends respectively.
+    // We know that each call to `parse_inner` corresponds to the insertion of a left and right
+    // parenthesis where that call starts and ends respectively.
     //
-    // Let's start by considering why the choice to close a parenthesis is always correct. Recall
-    // that, to ensure correctness, we need to ensure that we only close a parenthesis when the
-    // *right binding power of the operand to the left* of the *most-recently-parsed atom* is greater
-    // than the *left binding power of the operand to be parsed*. Visualized...
+    // Let's start by considering why the algorithm's choice of when to close a parenthesis is always
+    // correct. Recall that, to ensure correctness, we need to ensure that we only close a parenthesis
+    // when the binding power to the left of a given atom is greater than the binding power to the
+    // right of that atom. There are two cases to consider:
     //
-    // ```
-    // Items:       1   *   2   +   3
-    // Powers:    0   2   3   1   2    0
-    //                    ^ ^   ^
-    //                    | |___|_______ the most-recently-parsed atom
-    //                    |_____|_______ the right binding power of the operand to its left
-    //                          |_______ the left binding power of the operand to be parsed
-    // ```
+    // 1. The atom under which we're terminating is the same atom we consumed at the start of
+    //    `parse_inner` before entering the loop. Because `min_bp` is given as the right binding power
+    //    of the operator immediately proceeding it, this immediately tells us that the atom's left
+    //    binding power is strictly greater than the binding power of the operator to its right since
+    //    `right_bp < (min_bp = left_bp)`.
     //
-    // Luckily, we know that the right binding power of the operand to its left is greater than or
-    // equal to `min_bp`—implying that inserting a closing parenthesis here is valid—because... well,
-    // there's two cases:
+    // 2. The atom under which we're terminating is the last atom yielded by the recursive call to
+    //    `parse_inner` during the previous loop iteration. It's important to note, however, that the
+    //    last thing to consume atoms as a `parse_inner` invocation returns to its caller is a call
+    //    to `parse_inner` which consumes exactly one atom and never loops—no other part of the
+    //    `parse_inner` implementation can consume an atom besides it. Because `parse_inner` falls
+    //    under the first case, its positional facts—notably, that `right_bp < (min_bp = left_bp)`—
+    //    are inherited from it for free, thus implying that `right_bp < (min_bp = left_bp)` by the
+    //    time we return as well.
     //
-    // 1. That atom was parsed at the start of `parse_inner` and we're parsing our first operator.
-    //
-    //    In that case, because we pass the right hand binding power of the operator immediately
-    //    preceding it, `min_bp` is exactly equal to the the right binding power of the operand to
-    //    the atom's left.
-    //
-    // 2. The atom was parsed during a subsequent iteration of the inner loop.
-    //
-    // This case is a bit more complicated so let's visualize it:
-    //
-    // ```
-    // Items:    0   *  (1   *  (2   ^   3)  +   4
-    // Powers: 0   2   3   2   3   4   5   1   2   0
-    //                   ^             ^ ^ ^
-    //                   |_____________|_|_|______ the first atom of the `parse_inner` call in which
-    //                                 | | |       we're interested; its `min_bp` is `3`
-    //                                 | | |
-    //                                 | |_|______ the most-recently-parsed atom
-    //                                 |___|______ the right binding power of the operand to its left
-    //                                     |______ the left binding power of the operand to be parsed
-    // ```
-    //
-    // TODO: How do I prove this??? Is it even true???
+    // Now, let's consider why the algorithm's choice of when to open a parenthesis is also always
+    // correct. Recall that, to ensure correctness, we need to ensure that we only open a parenthesis
+    // when the binding power to the left of a given atom is less than or equal to the binding power
+    // to the right of that atom. This follows naturally from the fact that, for a given atom, we're
+    // either opening a parenthesis or closing one. Because we already established that closing a
+    // parenthesis happens if `right_bp < left_bp`, we know that, because we're opening a parenthesis
+    // instead, it must be true that `right_bp >= left_bp`.
     //
     // [matklad-pratt]: https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
     fn parse_inner(c: &mut TokenSequence, min_bp: u32) -> Self {
