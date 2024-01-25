@@ -443,19 +443,19 @@ impl AstExpr {
         Self::parse_inner(c, 0)
     }
 
-    // This method implements a Pratt parser to handle infix syntax in a single pass. The strategy,
-    // which was largely derived from [this page](matklad-pratt), is as follows:
+    // This method implements a Pratt parser to group infix operators in a single pass. The strategy,
+    // which was largely derived from [this page on Pratt parsers](matklad-pratt), is as follows:
     //
     // ## Binding Powers
     //
     // As a first approximation, an expression can be thought of as a sequence of atoms and the infix
-    // operators between them. In our case, we define atoms as the indivisible
-    // pre-existing sub-expressions of an expression such as literals, variables, and, thanks to the
-    // way in which we tokenize things, parentheses.
+    // operators between them. In our case, we define atoms as the indivisible pre-existing
+    // sub-expressions of an expression such as literals, variables, and, thanks to the way in which
+    // we tokenize things, parenthesized groups.
     //
     // Each infix operator has an associated left and right binding power, which is just an integer.
-    // A valid parse of an expression must then be parenthesized such that the parenthesis adjacent
-    // to each atom is pointing towards the operator with the highest binding power.
+    // A valid parse of an expression must then be parenthesized such that the parentheses adjacent
+    // to each atom are all pointing towards the operator with the highest binding power.
     //
     // For example, consider the following expression:
     //
@@ -472,7 +472,8 @@ impl AstExpr {
     // ```
     //
     // ...because the atom `2` should have a right-facing parenthesis pointing towards the `*` with
-    // binding power `3` rather than a left-facing parenthesis pointing towards the `+`.
+    // binding power `3` rather than a left-facing parenthesis pointing towards the `+`, which only
+    // has binding power `2`.
     //
     // This grouping, meanwhile, is valid:
     //
@@ -481,9 +482,10 @@ impl AstExpr {
     // Powers:     1   2   3   4
     // ```
     //
-    // We know that this parse is unique because each atom needs a corresponding parenthesis and the
-    // direction of that parenthesis is uniquely determined so long as we make ties impossible or
-    // define them to be biased in some way.
+    // We know that this parse is unique because each atom needs at least one corresponding parenthesis
+    // to fully group the expression and the direction of that parenthesis is uniquely determined so
+    // long as we make ties between binding powers impossible or define them to be biased in some
+    // way.
     //
     // In addition to uniquely defining an order of operations, this binding-power scheme can also
     // encode the notion of associativity:
@@ -538,19 +540,19 @@ impl AstExpr {
     //   In this case, we find the `*` operator.
     //
     // - Since the left binding power of `*` is 2`—which is greater than `0`—we know that we can wrap
-    //   our starting literal expression in an addition expression, with its left hand side being the
-    //   literal `1`. But how do we parse the right hand side?
+    //   our starting literal expression in a multiplication expression, with its left hand side being
+    //   the literal `1`. But how do we parse the expression's right hand side?
     //
     // - Well, why don't we just ask the `parse_inner` function to parse another expression? That's
-    //   its entire job after all. But, we can't just call `parse_inner` with the same `min_bp` of `0`
-    //   because that would cause it to parse all the way to the end of the stream. This would include
-    //   the `+ 3` part of the expression, which is clearly wrong since the addition should happen
-    //   after we compute the result of the multiplication.
+    //   its entire job after all. But, we can't just call `parse_inner` with the same `min_bp` of
+    //   `0` because that would cause it to parse all the way to the end of the stream. This would
+    //   include the `+ 3` part of the expression, which is clearly wrong since the addition should
+    //   happen after we compute the result of the multiplication.
     //
     // - So, to get around this problem, we just ask the parser to parse with a `min_bp` of `3`
-    //   instead. This ensures that the `+ 3` can be parsed by us—not is—since it will encounter the
-    //  `+` operator, see that its left binding power is `1`—which is less than `3`—and stop parsing
-    //  there, letting us parse it.
+    //   instead. This ensures that the `+ 3` can be parsed by our call rather than its call since
+    //   it will encounter the `+` operator, see that its left binding power is `1`—which is less
+    //   than `3`—and stop parsing there, letting us parse it.
     //
     // Here's pseudo-code for this algorithm:
     //
@@ -588,27 +590,34 @@ impl AstExpr {
     // right of that atom. There are two cases to consider:
     //
     // 1. The atom under which we're terminating is the same atom we consumed at the start of
-    //    `parse_inner` before entering the loop. Because `min_bp` is given as the right binding power
-    //    of the operator immediately proceeding it, this immediately tells us that the atom's left
-    //    binding power is strictly greater than the binding power of the operator to its right since
+    //    `parse_inner` before repeating the loop. Because `min_bp` is given as the right binding
+    //    power of the operator immediately proceeding it, this tells us that the atom's left binding
+    //    power is strictly greater than the binding power of the operator to its right since
     //    `right_bp < (min_bp = left_bp)`.
     //
     // 2. The atom under which we're terminating is the last atom yielded by the recursive call to
     //    `parse_inner` during the previous loop iteration. It's important to note, however, that the
-    //    last thing to consume atoms as a `parse_inner` invocation returns to its caller is a call
-    //    to `parse_inner` which consumes exactly one atom and never loops—no other part of the
-    //    `parse_inner` implementation can consume an atom besides it. Because `parse_inner` falls
-    //    under the first case, its positional facts—notably, that `right_bp < (min_bp = left_bp)`—
-    //    are inherited from it for free, thus implying that `right_bp < (min_bp = left_bp)` by the
-    //    time we return as well.
+    //    last thing to consume atoms during that prior nested `parse_inner` invocation was a deeply
+    //    nested call to `parse_inner` which consumes exactly one atom and never loops. This is because
+    //    no other part of the `parse_inner` implementation can consume an atom besides it. Because
+    //    this deeply nested call to `parse_inner` falls under the first case, its positional facts—
+    //    notably, that `right_bp < (min_bp = left_bp)`—are inherited from it for free, thus implying
+    //    that `right_bp < left_bp` by the time we return as well.
     //
     // Now, let's consider why the algorithm's choice of when to open a parenthesis is also always
     // correct. Recall that, to ensure correctness, we need to ensure that we only open a parenthesis
     // when the binding power to the left of a given atom is less than or equal to the binding power
-    // to the right of that atom. This follows naturally from the fact that, for a given atom, we're
-    // either opening a parenthesis or closing one. Because we already established that closing a
-    // parenthesis happens if `right_bp < left_bp`, we know that, because we're opening a parenthesis
-    // instead, it must be true that `right_bp >= left_bp`.
+    // to the right of that atom. Because this cannot be satisfied for calls to `parse_inner` which
+    // only consume a single atom, we'll exclude those. This is fine because adding a parenthesis
+    // there is not necessary.
+    //
+    // This condition is satisfied somewhat immediately by the fact that `parse_inner` can only parse
+    // beyond its first atom if the left binding power of the operator to its right is greater than
+    // `min_bp`, which is equal to the right binding power of the operator to the starting atom's
+    // left.
+    //
+    // Hence, Pratt parsers properly follow our intuition for how binding powers specify the direction
+    // of parentheses.
     //
     // [matklad-pratt]: https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
     fn parse_inner(c: &mut TokenSequence, min_bp: u32) -> Self {
