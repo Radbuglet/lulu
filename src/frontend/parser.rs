@@ -10,15 +10,19 @@ use crate::{
 
 use std::fmt;
 
-use aunty::{Obj, StrongObj};
+use aunty::Obj;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use super::{
     ast::{
-        AstBinOpExpr, AstBinOpKind, AstDotExpr, AstExpr, AstMultiPath, AstMultiPathList, AstPath,
-        AstPathExpr, AstPathPrefix, AstType, AstTypeKind,
+        AstBinOpKind, AstExpr, AstLiteralExpr, AstMultiPath, AstMultiPathList, AstParenExpr,
+        AstPath, AstPathExpr, AstPathPrefix, AstTupleExpr, AstType, AstTypeKind,
     },
-    token::{punct, GroupDelimiter, PunctChar, Token, TokenGroup, TokenIdent, TokenSequence},
+    token::{
+        punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenGroup, TokenIdent,
+        TokenNumberLit, TokenSequence, TokenStringLit,
+    },
 };
 
 // === Driver === //
@@ -27,7 +31,7 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fm
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
 
-    let expr = AstExpr::parse(&mut c);
+    let expr = AstExpr::parse_atom(&mut c);
 
     if !c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
         c.stuck(|_| ());
@@ -39,53 +43,53 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fm
 // === Keywords === //
 
 macro_rules! define_keywords {
-	(
-		$(#[$attr:meta])*
-		$vis:vis enum $enum_name:ident {
-			$($name:ident = $text:expr),*
-			$(,)?
-		}
-	) => {
-		$(#[$attr])*
-		#[derive(Copy, Clone, Hash, Eq, PartialEq)]
-		$vis enum $enum_name {
-			$($name),*
-		}
+    (
+        $(#[$attr:meta])*
+        $vis:vis enum $enum_name:ident {
+            $($name:ident = $text:expr),*
+            $(,)?
+        }
+    ) => {
+        $(#[$attr])*
+        #[derive(Copy, Clone, Hash, Eq, PartialEq)]
+        $vis enum $enum_name {
+            $($name),*
+        }
 
-		impl $enum_name {
-			pub fn from_sym(c: Symbol) -> Option<Self> {
-				thread_local! {
-					static SYM_MAP: FxHashMap<Symbol, $enum_name> = FxHashMap::from_iter([
-						$((Symbol!($text), $enum_name::$name),)*
-					]);
-				}
+        impl $enum_name {
+            pub fn from_sym(c: Symbol) -> Option<Self> {
+                thread_local! {
+                    static SYM_MAP: FxHashMap<Symbol, $enum_name> = FxHashMap::from_iter([
+                        $((Symbol!($text), $enum_name::$name),)*
+                    ]);
+                }
 
-				SYM_MAP.with(|v| v.get(&c).copied())
-			}
+                SYM_MAP.with(|v| v.get(&c).copied())
+            }
 
-			pub fn to_sym(self) -> Symbol {
-				const SYM_MAP: [Symbol; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
-					$(Symbol!($text),)*
-				];
+            pub fn to_sym(self) -> Symbol {
+                const SYM_MAP: [Symbol; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
+                    $(Symbol!($text),)*
+                ];
 
-				SYM_MAP[self as usize]
-			}
+                SYM_MAP[self as usize]
+            }
 
-			pub fn to_name_sym(self) -> Symbol {
-				const SYM_MAP: [Symbol; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
-					$(Symbol!("`" $text "`"),)*
-				];
+            pub fn to_name_sym(self) -> Symbol {
+                const SYM_MAP: [Symbol; 0 $(+ { let _ = $enum_name::$name; 1})*] = [
+                    $(Symbol!("`" $text "`"),)*
+                ];
 
-				SYM_MAP[self as usize]
-			}
-		}
+                SYM_MAP[self as usize]
+            }
+        }
 
-		impl fmt::Debug for $enum_name {
-			fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-				write!(f, "{:?}", self.to_sym())
-			}
-		}
-	};
+        impl fmt::Debug for $enum_name {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "{:?}", self.to_sym())
+            }
+        }
+    };
 }
 
 define_keywords! {
@@ -98,6 +102,8 @@ define_keywords! {
         SelfTy = "Self",
         Self_ = "self",
         In = "in",
+        True = "true",
+        False = "false",
     }
 }
 
@@ -113,9 +119,9 @@ fn parse_identifier(c: &mut TokenSequence, name: Symbol) -> Option<TokenIdent> {
 
     if ident.is_none() {
         c.hint_stuck_if_passes(
-			"this identifier has been reserved as a keyword; prefix it with `@` to interpret it as an identifier",
-			|c| c.next().is_some_and(|t| t.as_ident().is_some()),
-		);
+            "this identifier has been reserved as a keyword; prefix it with `@` to interpret it as an identifier",
+            |c| c.next().is_some_and(|t| t.as_ident().is_some()),
+        );
     }
 
     ident
@@ -161,7 +167,13 @@ fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
 }
 
 fn parse_punct(c: &mut TokenSequence, char: PunctChar) -> Option<Span> {
-    parse_puncts(c, char.as_char_name(), &[char])
+    c.expect(char.as_char_name(), |c| {
+        let span = c.next_span();
+        c.next()
+            .and_then(Token::as_punct)
+            .is_some_and(|c| c.char == char)
+            .then_some(span)
+    })
 }
 
 fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
@@ -176,6 +188,27 @@ fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Opti
         c.next()
             .and_then(Token::as_group)
             .filter(|g| g.delimiter == delimiter)
+    })
+}
+
+fn parse_str_lit<'a>(c: &mut TokenSequence<'a>, name: Symbol) -> Option<&'a TokenStringLit> {
+    c.expect(name, |c| match c.next() {
+        Some(Token::StringLit(lit)) => Some(lit),
+        _ => None,
+    })
+}
+
+fn parse_char_lit<'a>(c: &mut TokenSequence<'a>, name: Symbol) -> Option<&'a TokenCharLit> {
+    c.expect(name, |c| match c.next() {
+        Some(Token::CharLit(lit)) => Some(lit),
+        _ => None,
+    })
+}
+
+fn parse_number_lit<'a>(c: &mut TokenSequence<'a>, name: Symbol) -> Option<&'a TokenNumberLit> {
+    c.expect(name, |c| match c.next() {
+        Some(Token::NumberLit(lit)) => Some(lit),
+        _ => None,
     })
 }
 
@@ -259,7 +292,7 @@ impl AstMultiPath {
         let (expecting_part, base) = AstPath::parse_inner(c, is_root);
 
         // Match tree part
-        let imports = if expecting_part {
+        let imports = if expecting_part || base.is_empty() {
             let start_span = c.next_span();
 
             if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
@@ -291,7 +324,9 @@ impl AstMultiPath {
             } else if parse_punct(c, punct!('*')).is_some() {
                 AstMultiPathList::Wildcard
             } else {
-                c.stuck(|_| ());
+                if !base.is_empty() {
+                    c.stuck(|_| ());
+                }
                 AstMultiPathList::List(Box::from_iter([]))
             }
         } else {
@@ -387,7 +422,7 @@ impl AstType {
             }
 
             // Match EOS
-            if !c.expect(Symbol!(")"), |c| c.next().is_none()) {
+            if !c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
                 c.stuck(|_| ());
             }
 
@@ -405,63 +440,279 @@ impl AstType {
 
 impl AstExpr {
     pub fn parse(c: &mut TokenSequence) -> Self {
-        // We begin by parsing a bunch of expression fragments.
-        let mut frags = Vec::<AstExpr>::new();
+        Self::parse_inner(c, 0)
+    }
 
-        loop {
-            if !frags.is_empty()
-                && !frags
-                    .last()
-                    .is_some_and(|v| matches!(v, AstExpr::BinOp(_) | AstExpr::UnaryOp(_)))
-            {
-                // Match dot expressions
-                if parse_punct(c, punct!('.')).is_some() {
-                    let Some(field) = parse_identifier(c, Symbol!("member name")) else {
+    // This method implements a Pratt parser to handle infix syntax in a single pass. The strategy,
+    // which was largely derived from [this page](matklad-pratt), is as follows:
+    //
+    // ## Binding Powers
+    //
+    // As a first approximation, an expression can be thought of as a sequence of atoms and the infix
+    // operators between them. In our case, we define atoms as the indivisible
+    // pre-existing sub-expressions of an expression such as literals, variables, and, thanks to the
+    // way in which we tokenize things, parentheses.
+    //
+    // Each infix operator has an associated left and right binding power, which is just an integer.
+    // A valid parse of an expression must then be parenthesized such that the parenthesis adjacent
+    // to each atom is pointing towards the operator with the highest binding power.
+    //
+    // For example, consider the following expression:
+    //
+    // ```
+    // Items:    1   +   2   *   3
+    // Powers:     1   2   3   4
+    // ```
+    //
+    // The following grouping is invalid:
+    //
+    // ```
+    // Items:  ((1   +   2)  *   3)
+    // Powers:     1   2   3   4
+    // ```
+    //
+    // ...because the atom `2` should have a right-facing parenthesis pointing towards the `*` with
+    // binding power `3` rather than a left-facing parenthesis pointing towards the `+`.
+    //
+    // This grouping, meanwhile, is valid:
+    //
+    // ```
+    // Items:   (1   +  (2   *   3))
+    // Powers:     1   2   3   4
+    // ```
+    //
+    // We know that this parse is unique because each atom needs a corresponding parenthesis and the
+    // direction of that parenthesis is uniquely determined so long as we make ties impossible or
+    // define them to be biased in some way.
+    //
+    // In addition to uniquely defining an order of operations, this binding-power scheme can also
+    // encode the notion of associativity:
+    //
+    // Left associative...
+    //
+    // ```
+    // Items:       1   +   2   +   3
+    // Powers:        1   2   1   2
+    //
+    // Parses as: ((1   +   2)  +   3)
+    // ```
+    //
+    // Right associative...
+    //
+    // ```
+    // Items:       1   +   2   +   3
+    // Powers:        2   1   2   1
+    //
+    // Parses as:  (1   +  (2   +   3))
+    // ```
+    //
+    // ...but how do we implement this as a recursive-descent algorithm?
+    //
+    // ## Basic Pratt Parsing
+    //
+    // Here's where the description of this method comes in:
+    //
+    // ```
+    // `parse_inner`:
+    // Parses an expression while the left binding power of the subsequent operator is higher than
+    // the provided `min_bp`, returning an expression respecting operator-precedence.
+    // ```
+    //
+    // We can pretty immediately see that, to have this function parse the entire expression, we can
+    // just set `min_bp` to `0`—a binding power lower than the binding powers of all infix operators.
+    //
+    // But how does that let us handle precedence?
+    //
+    // Let's say you were in the process of parsing...
+    //
+    // ```
+    // Items:       1   *   2   +   3
+    // Powers:    0   2   3   1   2    0
+    // ```
+    //
+    // Here's how we'd do it!
+    //
+    // - We start at the left with `min_bp = 0` and parse the first atom, which is the literal `1`.
+    //
+    // - Now, let's see if we can continue parsing this expression by peeking an infix operator.
+    //   In this case, we find the `*` operator.
+    //
+    // - Since the left binding power of `*` is 2`—which is greater than `0`—we know that we can wrap
+    //   our starting literal expression in an addition expression, with its left hand side being the
+    //   literal `1`. But how do we parse the right hand side?
+    //
+    // - Well, why don't we just ask the `parse_inner` function to parse another expression? That's
+    //   its entire job after all. But, we can't just call `parse_inner` with the same `min_bp` of `0`
+    //   because that would cause it to parse all the way to the end of the stream. This would include
+    //   the `+ 3` part of the expression, which is clearly wrong since the addition should happen
+    //   after we compute the result of the multiplication.
+    //
+    // - So, to get around this problem, we just ask the parser to parse with a `min_bp` of `3`
+    //   instead. This ensures that the `+ 3` can be parsed by us—not is—since it will encounter the
+    //  `+` operator, see that its left binding power is `1`—which is less than `3`—and stop parsing
+    //  there, letting us parse it.
+    //
+    // Here's pseudo-code for this algorithm:
+    //
+    // ```
+    // fn parse_inner(cursor, min_bp: u32) -> Expr {
+    //     let mut expr = cursor.parse_atom();
+    //
+    //     loop {
+    //          let op = cursor.try_peek_op();
+    //          if !op.is_some_and(|op| left_bp(op) >= min_bp) {
+    //              break expr;
+    //          }
+    //
+    //          let lhs = expr;
+    //          let op = cursor.parse_op();
+    //          let rhs = parse_inner(cursor, right_bp(op));
+    //
+    //          expr = Expr { lhs, op, rhs };
+    //     }
+    // }
+    // ```
+    //
+    // It's really that simple!
+    //
+    // But how do we ensure that the results adhere to the definition of precedence parsing above?
+    //
+    // ## Proof of Correctness
+    //
+    // We know that each call to `parse_inner` corresponds to the inclusion of a left and right
+    // parenthesis where it starts and ends respectively.
+    //
+    // Let's start by considering why the choice to close a parenthesis is always correct. Recall
+    // that, to ensure correctness, we need to ensure that we only close a parenthesis when the
+    // *right binding power of the operand to the left* of the *most-recently-parsed atom* is greater
+    // than the *left binding power of the operand to be parsed*. Visualized...
+    //
+    // ```
+    // Items:       1   *   2   +   3
+    // Powers:    0   2   3   1   2    0
+    //                    ^ ^   ^
+    //                    | |___|_______ the most-recently-parsed atom
+    //                    |_____|_______ the right binding power of the operand to its left
+    //                          |_______ the left binding power of the operand to be parsed
+    // ```
+    //
+    // Luckily, we know that the right binding power of the operand to its left is greater than or
+    // equal to `min_bp`—implying that inserting a closing parenthesis here is valid—because... well,
+    // there's two cases:
+    //
+    // 1. That atom was parsed at the start of `parse_inner` and we're parsing our first operator.
+    //
+    //    In that case, because we pass the right hand binding power of the operator immediately
+    //    preceding it, `min_bp` is exactly equal to the the right binding power of the operand to
+    //    the atom's left.
+    //
+    // 2. The atom was parsed during a subsequent iteration of the inner loop.
+    //
+    // This case is a bit more complicated so let's visualize it:
+    //
+    // ```
+    // Items:    0   *  (1   *  (2   ^   3)  +   4
+    // Powers: 0   2   3   2   3   4   5   1   2   0
+    //                   ^             ^ ^ ^
+    //                   |_____________|_|_|______ the first atom of the `parse_inner` call in which
+    //                                 | | |       we're interested; its `min_bp` is `3`
+    //                                 | | |
+    //                                 | |_|______ the most-recently-parsed atom
+    //                                 |___|______ the right binding power of the operand to its left
+    //                                     |______ the left binding power of the operand to be parsed
+    // ```
+    //
+    // TODO: How do I prove this??? Is it even true???
+    //
+    // [matklad-pratt]: https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
+    fn parse_inner(c: &mut TokenSequence, min_bp: u32) -> Self {
+        todo!();
+    }
+
+    fn binding_power(op: AstBinOpKind) -> (u32, u32) {
+        use AstBinOpKind::*;
+
+        match op {
+            Add | Sub => (1, 2),
+            Mul | Div | Rem => (3, 4),
+            _ => todo!(),
+        }
+    }
+
+    fn parse_atom(c: &mut TokenSequence) -> Self {
+        // Match parenthesized expression
+        if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
+            // Parse a sequence of expressions
+            let mut c = c.enter(group.cursor());
+            let mut items = SmallVec::<[AstExpr; 1]>::new();
+
+            loop {
+                // Match and EOS
+                //
+                // If we found an EOS after a comma (or on our first iteration),
+                // we know that this is a tuple.
+                if c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
+                    return AstTupleExpr {
+                        items: Box::from_iter(items),
+                    }
+                    .into();
+                }
+
+                // Match an expression
+                items.push(AstExpr::parse(&mut c));
+
+                // Match the delimiting comma
+                if parse_punct(&mut c, punct!(',')).is_none() {
+                    // If it's missing, match the EOS
+                    if !c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
                         c.stuck(|_| ());
-                        continue;
+                    }
+
+                    return if items.len() == 1 {
+                        AstParenExpr {
+                            expr: items.into_iter().nth(0).unwrap(),
+                        }
+                        .into()
+                    } else {
+                        AstTupleExpr {
+                            items: Box::from_iter(items),
+                        }
+                        .into()
                     };
-
-                    let prev = frags.pop().unwrap();
-                    frags.push(
-                        StrongObj::new(AstDotExpr {
-                            expr: prev,
-                            member: field.text,
-                        })
-                        .into(),
-                    );
-                }
-
-                // Match binary operators
-                let op = if parse_punct(c, punct!('+')).is_some() {
-                    Some(AstBinOpKind::Add)
-                } else if parse_punct(c, punct!('-')).is_some() {
-                    Some(AstBinOpKind::Sub)
-                } else {
-                    None
-                };
-
-                if let Some(op) = op {
-                    frags.push(
-                        StrongObj::new(AstBinOpExpr {
-                            kind: op,
-                            lhs: AstExpr::Placeholder,
-                            rhs: AstExpr::Placeholder,
-                        })
-                        .into(),
-                    );
-                    continue;
-                }
-            } else {
-                let path = AstPath::parse(c);
-                if !path.is_empty() {
-                    frags.push(StrongObj::new(AstPathExpr { path }).into());
-                    continue;
                 }
             }
-
-            break;
         }
 
-        frags.pop().unwrap_or(AstExpr::Placeholder)
+        // Match path
+        {
+            let path = AstPath::parse(c);
+            if !path.is_empty() {
+                return AstPathExpr { path }.into();
+            }
+        }
+
+        // Match literals
+        if let Some(lit) = parse_str_lit(c, Symbol!("string literal")) {
+            return AstLiteralExpr::String(*lit).into();
+        }
+
+        if let Some(lit) = parse_char_lit(c, Symbol!("character literal")) {
+            return AstLiteralExpr::Char(*lit).into();
+        }
+
+        if let Some(lit) = parse_number_lit(c, Symbol!("numeric literal")) {
+            return AstLiteralExpr::Number(*lit).into();
+        }
+
+        if let Some(ident) = parse_keyword(c, AstKeyword::True) {
+            return AstLiteralExpr::Bool(ident.span, true).into();
+        }
+
+        if let Some(ident) = parse_keyword(c, AstKeyword::False) {
+            return AstLiteralExpr::Bool(ident.span, false).into();
+        }
+
+        c.stuck(|_| ());
+        AstExpr::Placeholder
     }
 }

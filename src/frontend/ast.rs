@@ -2,7 +2,10 @@ use aunty::StrongObj;
 
 use crate::util::{span::Span, symbol::Symbol};
 
-use super::{parser::AstKeyword, token::TokenIdent};
+use super::{
+    parser::AstKeyword,
+    token::{TokenCharLit, TokenIdent, TokenNumberLit, TokenStringLit},
+};
 
 // === Paths === //
 
@@ -89,6 +92,9 @@ pub enum AstExpr {
     Index(StrongObj<AstIndexExpr>),
     BinOp(StrongObj<AstBinOpExpr>),
     UnaryOp(StrongObj<AstUnaryOpExpr>),
+    Literal(StrongObj<AstLiteralExpr>),
+    Tuple(StrongObj<AstTupleExpr>),
+    Paren(StrongObj<AstParenExpr>),
 }
 
 impl From<StrongObj<AstPathExpr>> for AstExpr {
@@ -124,6 +130,78 @@ impl From<StrongObj<AstBinOpExpr>> for AstExpr {
 impl From<StrongObj<AstUnaryOpExpr>> for AstExpr {
     fn from(value: StrongObj<AstUnaryOpExpr>) -> Self {
         Self::UnaryOp(value)
+    }
+}
+
+impl From<StrongObj<AstLiteralExpr>> for AstExpr {
+    fn from(value: StrongObj<AstLiteralExpr>) -> Self {
+        Self::Literal(value)
+    }
+}
+
+impl From<StrongObj<AstTupleExpr>> for AstExpr {
+    fn from(value: StrongObj<AstTupleExpr>) -> Self {
+        Self::Tuple(value)
+    }
+}
+
+impl From<StrongObj<AstParenExpr>> for AstExpr {
+    fn from(value: StrongObj<AstParenExpr>) -> Self {
+        Self::Paren(value)
+    }
+}
+
+impl From<AstPathExpr> for AstExpr {
+    fn from(value: AstPathExpr) -> Self {
+        Self::Path(StrongObj::new(value))
+    }
+}
+
+impl From<AstDotExpr> for AstExpr {
+    fn from(value: AstDotExpr) -> Self {
+        Self::Dot(StrongObj::new(value))
+    }
+}
+
+impl From<AstCallExpr> for AstExpr {
+    fn from(value: AstCallExpr) -> Self {
+        Self::Call(StrongObj::new(value))
+    }
+}
+
+impl From<AstIndexExpr> for AstExpr {
+    fn from(value: AstIndexExpr) -> Self {
+        Self::Index(StrongObj::new(value))
+    }
+}
+
+impl From<AstBinOpExpr> for AstExpr {
+    fn from(value: AstBinOpExpr) -> Self {
+        Self::BinOp(StrongObj::new(value))
+    }
+}
+
+impl From<AstUnaryOpExpr> for AstExpr {
+    fn from(value: AstUnaryOpExpr) -> Self {
+        Self::UnaryOp(StrongObj::new(value))
+    }
+}
+
+impl From<AstLiteralExpr> for AstExpr {
+    fn from(value: AstLiteralExpr) -> Self {
+        Self::Literal(StrongObj::new(value))
+    }
+}
+
+impl From<AstTupleExpr> for AstExpr {
+    fn from(value: AstTupleExpr) -> Self {
+        Self::Tuple(StrongObj::new(value))
+    }
+}
+
+impl From<AstParenExpr> for AstExpr {
+    fn from(value: AstParenExpr) -> Self {
+        Self::Paren(StrongObj::new(value))
     }
 }
 
@@ -182,4 +260,22 @@ pub struct AstUnaryOpExpr {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum AstUnaryOpKind {
     Neg,
+}
+
+#[derive(Debug)]
+pub enum AstLiteralExpr {
+    String(TokenStringLit),
+    Number(TokenNumberLit),
+    Char(TokenCharLit),
+    Bool(Span, bool),
+}
+
+#[derive(Debug)]
+pub struct AstTupleExpr {
+    pub items: Box<[AstExpr]>,
+}
+
+#[derive(Debug)]
+pub struct AstParenExpr {
+    pub expr: AstExpr,
 }
