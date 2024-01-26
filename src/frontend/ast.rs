@@ -40,6 +40,13 @@ pub struct AstPath {
 }
 
 impl AstPath {
+    pub fn new_local(name: TokenIdent) -> Self {
+        Self {
+            prefix: AstPathPrefix::Self_,
+            parts: Box::from_iter([AstPathPart(name)]),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
     }
@@ -91,10 +98,11 @@ pub enum AstExpr {
     Call(StrongObj<AstCallExpr>),
     Index(StrongObj<AstIndexExpr>),
     BinOp(StrongObj<AstBinOpExpr>),
-    UnaryOp(StrongObj<AstUnaryOpExpr>),
+    UnaryNeg(StrongObj<AstUnaryNegExpr>),
     Literal(StrongObj<AstLiteralExpr>),
     Tuple(StrongObj<AstTupleExpr>),
     Paren(StrongObj<AstParenExpr>),
+    Ctor(StrongObj<AstCtorExpr>),
 }
 
 impl From<StrongObj<AstPathExpr>> for AstExpr {
@@ -127,9 +135,9 @@ impl From<StrongObj<AstBinOpExpr>> for AstExpr {
     }
 }
 
-impl From<StrongObj<AstUnaryOpExpr>> for AstExpr {
-    fn from(value: StrongObj<AstUnaryOpExpr>) -> Self {
-        Self::UnaryOp(value)
+impl From<StrongObj<AstUnaryNegExpr>> for AstExpr {
+    fn from(value: StrongObj<AstUnaryNegExpr>) -> Self {
+        Self::UnaryNeg(value)
     }
 }
 
@@ -148,6 +156,12 @@ impl From<StrongObj<AstTupleExpr>> for AstExpr {
 impl From<StrongObj<AstParenExpr>> for AstExpr {
     fn from(value: StrongObj<AstParenExpr>) -> Self {
         Self::Paren(value)
+    }
+}
+
+impl From<StrongObj<AstCtorExpr>> for AstExpr {
+    fn from(value: StrongObj<AstCtorExpr>) -> Self {
+        Self::Ctor(value)
     }
 }
 
@@ -181,9 +195,9 @@ impl From<AstBinOpExpr> for AstExpr {
     }
 }
 
-impl From<AstUnaryOpExpr> for AstExpr {
-    fn from(value: AstUnaryOpExpr) -> Self {
-        Self::UnaryOp(StrongObj::new(value))
+impl From<AstUnaryNegExpr> for AstExpr {
+    fn from(value: AstUnaryNegExpr) -> Self {
+        Self::UnaryNeg(StrongObj::new(value))
     }
 }
 
@@ -202,6 +216,12 @@ impl From<AstTupleExpr> for AstExpr {
 impl From<AstParenExpr> for AstExpr {
     fn from(value: AstParenExpr) -> Self {
         Self::Paren(StrongObj::new(value))
+    }
+}
+
+impl From<AstCtorExpr> for AstExpr {
+    fn from(value: AstCtorExpr) -> Self {
+        Self::Ctor(StrongObj::new(value))
     }
 }
 
@@ -242,7 +262,6 @@ pub enum AstBinOpKind {
     Mul,
     Div,
     Rem,
-    ShortXor,
     ShortOr,
     ShortAnd,
     BitXor,
@@ -251,15 +270,8 @@ pub enum AstBinOpKind {
 }
 
 #[derive(Debug)]
-pub struct AstUnaryOpExpr {
-    pub span: Span,
-    pub kind: AstUnaryOpKind,
+pub struct AstUnaryNegExpr {
     pub expr: AstExpr,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum AstUnaryOpKind {
-    Neg,
 }
 
 #[derive(Debug)]
@@ -278,4 +290,10 @@ pub struct AstTupleExpr {
 #[derive(Debug)]
 pub struct AstParenExpr {
     pub expr: AstExpr,
+}
+
+#[derive(Debug)]
+pub struct AstCtorExpr {
+    pub item: AstPath,
+    pub fields: Vec<(TokenIdent, AstExpr)>,
 }

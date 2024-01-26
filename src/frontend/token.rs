@@ -878,6 +878,7 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
             builder.push('.');
 
             // Match zero or more fractional digits
+            // FIXME: This greedily parses letters, denying the syntax `32.foo`
             parse_digits(c, &mut builder, DigitKind::Decimal);
         }
     } else {

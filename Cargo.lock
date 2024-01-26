@@ -53,7 +53,7 @@ checksum = "080e9890a082662b09c1ad45f567faeeb47f22b5fb23895fbe1e651e718e25ca"
 [[package]]
 name = "aunty"
 version = "0.1.0"
-source = "git+https://github.com/Radbuglet/aunty.git?rev=8f5254fd976e05b0e896a605b9a9a3750cd1f1ef#8f5254fd976e05b0e896a605b9a9a3750cd1f1ef"
+source = "git+https://github.com/Radbuglet/aunty.git?rev=b473aadd44bdd64d94b1378e7da7f2c959f7ef25#b473aadd44bdd64d94b1378e7da7f2c959f7ef25"
 dependencies = [
  "autoken",
  "derive-where",

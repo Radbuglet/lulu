@@ -2,7 +2,7 @@ use crate::{
     frontend::ast::AstPathPart,
     util::{
         diag::DiagnosticReporter,
-        parser::{ParseContext, ParseCursor},
+        parser::{ForkableCursor, ParseContext, ParseCursor},
         span::Span,
         symbol::Symbol,
     },
@@ -16,11 +16,12 @@ use smallvec::SmallVec;
 
 use super::{
     ast::{
-        AstBinOpKind, AstExpr, AstLiteralExpr, AstMultiPath, AstMultiPathList, AstParenExpr,
-        AstPath, AstPathExpr, AstPathPrefix, AstTupleExpr, AstType, AstTypeKind,
+        AstBinOpExpr, AstBinOpKind, AstCallExpr, AstCtorExpr, AstDotExpr, AstExpr, AstLiteralExpr,
+        AstMultiPath, AstMultiPathList, AstParenExpr, AstPath, AstPathExpr, AstPathPrefix,
+        AstTupleExpr, AstType, AstTypeKind, AstUnaryNegExpr,
     },
     token::{
-        punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenGroup, TokenIdent,
+        punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor, TokenGroup, TokenIdent,
         TokenNumberLit, TokenSequence, TokenStringLit,
     },
 };
@@ -31,7 +32,7 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fm
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
 
-    let expr = AstExpr::parse_atom(&mut c);
+    let expr = AstExpr::parse(&mut c);
 
     if !c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
         c.stuck(|_| ());
@@ -138,8 +139,8 @@ fn parse_keyword(c: &mut TokenSequence, kw: AstKeyword) -> Option<TokenIdent> {
     })
 }
 
-fn parse_puncts(c: &mut TokenSequence, name: Symbol, puncts: &[PunctChar]) -> Option<Span> {
-    c.expect(name, |c| {
+fn match_puncts(c: &mut TokenCursor, puncts: &[PunctChar]) -> Option<Span> {
+    c.lookahead(|c| {
         let start = c.next_span();
         let mut last = start;
 
@@ -160,6 +161,10 @@ fn parse_puncts(c: &mut TokenSequence, name: Symbol, puncts: &[PunctChar]) -> Op
             })
             .then(|| start.to(last))
     })
+}
+
+fn parse_puncts(c: &mut TokenSequence, name: Symbol, puncts: &[PunctChar]) -> Option<Span> {
+    c.expect(name, |c| match_puncts(c, puncts))
 }
 
 fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
@@ -621,10 +626,56 @@ impl AstExpr {
     //
     // [matklad-pratt]: https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
     fn parse_inner(c: &mut TokenSequence, min_bp: u32) -> Self {
-        todo!();
+        let mut expr = Self::parse_atom(c);
+
+        loop {
+            let Some(kind) = c.expect(Symbol!("binary operator"), |c| {
+                Self::match_bin_op(c).filter(|&op| Self::bin_binding_power(op).0 >= min_bp)
+            }) else {
+                break;
+            };
+
+            let lhs = expr;
+            let rhs = Self::parse_inner(c, Self::bin_binding_power(kind).1);
+            expr = AstBinOpExpr { lhs, kind, rhs }.into();
+        }
+
+        expr
     }
 
-    fn binding_power(op: AstBinOpKind) -> (u32, u32) {
+    fn match_bin_op(c: &mut TokenCursor) -> Option<AstBinOpKind> {
+        // Parse multi-puncts
+        if match_puncts(c, &[punct!('&'), punct!('&')]).is_some() {
+            return Some(AstBinOpKind::ShortAnd);
+        }
+
+        if match_puncts(c, &[punct!('|'), punct!('|')]).is_some() {
+            return Some(AstBinOpKind::ShortOr);
+        }
+
+        // Parse single puncts
+        if let Some(ch) = c.lookahead(|c| {
+            c.next()
+                .and_then(Token::as_punct)
+                .and_then(|punct| match punct.char {
+                    PunctChar::Plus => Some(AstBinOpKind::Add),
+                    PunctChar::Minus => Some(AstBinOpKind::Sub),
+                    PunctChar::Asterisk => Some(AstBinOpKind::Mul),
+                    PunctChar::Slash => Some(AstBinOpKind::Div),
+                    PunctChar::Percent => Some(AstBinOpKind::Rem),
+                    PunctChar::Caret => Some(AstBinOpKind::BitXor),
+                    PunctChar::Bar => Some(AstBinOpKind::BitOr),
+                    PunctChar::Ampersand => Some(AstBinOpKind::BitAnd),
+                    _ => None,
+                })
+        }) {
+            return Some(ch);
+        }
+
+        None
+    }
+
+    fn bin_binding_power(op: AstBinOpKind) -> (u32, u32) {
         use AstBinOpKind::*;
 
         match op {
@@ -635,6 +686,77 @@ impl AstExpr {
     }
 
     fn parse_atom(c: &mut TokenSequence) -> Self {
+        if parse_punct(c, punct!('-')).is_some() {
+            AstUnaryNegExpr {
+                expr: Self::parse_atom_base_with_post(c),
+            }
+            .into()
+        } else {
+            Self::parse_atom_base_with_post(c)
+        }
+    }
+
+    fn parse_atom_base_with_post(c: &mut TokenSequence) -> Self {
+        let mut expr = Self::parse_atom_base(c);
+
+        loop {
+            // Match member access
+            if parse_punct(c, punct!('.')).is_some() {
+                let Some(member) = parse_identifier(c, Symbol!("member name")) else {
+                    c.stuck(|_| ());
+                    continue;
+                };
+
+                expr = AstDotExpr {
+                    expr,
+                    member: member.text,
+                }
+                .into();
+                continue;
+            }
+
+            // Match calls
+            if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
+                let mut c = c.enter(group.cursor());
+                let mut args = Vec::new();
+
+                loop {
+                    // Match EOS
+                    if c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
+                        break;
+                    }
+
+                    // Match expression
+                    args.push(AstExpr::parse(&mut c));
+
+                    // Match comma
+                    if parse_punct(&mut c, punct!(',')).is_none() {
+                        if !c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
+                            c.stuck(|_| ());
+                        }
+
+                        break;
+                    }
+
+                    continue;
+                }
+
+                expr = AstCallExpr {
+                    expr,
+                    args: Box::from_iter(args),
+                }
+                .into();
+
+                continue;
+            }
+
+            break;
+        }
+
+        expr
+    }
+
+    fn parse_atom_base(c: &mut TokenSequence) -> Self {
         // Match parenthesized expression
         if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
             // Parse a sequence of expressions
@@ -682,6 +804,44 @@ impl AstExpr {
         {
             let path = AstPath::parse(c);
             if !path.is_empty() {
+                // Match structure creation
+                if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+                    let mut c = c.enter(group.cursor());
+
+                    let mut fields = Vec::new();
+
+                    loop {
+                        // Match field name
+                        let Some(field) = parse_identifier(&mut c, Symbol!("field name")) else {
+                            break;
+                        };
+
+                        // Try to match explicit value
+                        let value = if parse_punct(&mut c, punct!(':')).is_some() {
+                            AstExpr::parse(&mut c)
+                        } else {
+                            AstPathExpr {
+                                path: AstPath::new_local(field),
+                            }
+                            .into()
+                        };
+
+                        fields.push((field, value));
+
+                        // Match comma
+                        if parse_punct(&mut c, punct!(',')).is_none() {
+                            break;
+                        }
+                    }
+
+                    // Match EOS
+                    if !c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
+                        c.stuck(|_| ());
+                    }
+
+                    return AstCtorExpr { item: path, fields }.into();
+                }
+
                 return AstPathExpr { path }.into();
             }
         }
