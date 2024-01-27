@@ -16,9 +16,9 @@ use smallvec::SmallVec;
 
 use super::{
     ast::{
-        AstBinOpExpr, AstBinOpKind, AstCallExpr, AstCtorExpr, AstDotExpr, AstExpr, AstLiteralExpr,
-        AstMultiPath, AstMultiPathList, AstParenExpr, AstPath, AstPathExpr, AstPathPrefix,
-        AstTupleExpr, AstType, AstTypeKind, AstUnaryNegExpr,
+        AstBinOpExpr, AstBinOpKind, AstCallExpr, AstCtorExpr, AstDotExpr, AstExpr, AstIndexExpr,
+        AstLiteralExpr, AstMultiPath, AstMultiPathList, AstParenExpr, AstPath, AstPathExpr,
+        AstPathPrefix, AstTupleExpr, AstType, AstTypeKind, AstUnaryNegExpr,
     },
     token::{
         punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor, TokenGroup, TokenIdent,
@@ -246,7 +246,7 @@ impl AstPath {
             } else if is_root && parse_keyword(c, AstKeyword::Self_).is_some() {
                 (AstPathPrefix::Self_, Phase::WaitingForTurbo, false)
             } else {
-                (AstPathPrefix::Self_, Phase::WaitingForPart, false)
+                (AstPathPrefix::Implicit, Phase::WaitingForPart, false)
             };
 
         // Match parts
@@ -746,6 +746,23 @@ impl AstExpr {
                     args: Box::from_iter(args),
                 }
                 .into();
+
+                continue;
+            }
+
+            // Match indexes
+            if let Some(group) = parse_group(c, GroupDelimiter::Bracket) {
+                let mut c = c.enter(group.cursor());
+
+                expr = AstIndexExpr {
+                    expr,
+                    indexer: AstExpr::parse(&mut c),
+                }
+                .into();
+
+                if !c.expect(Symbol!("`]`"), |c| c.next().is_none()) {
+                    c.stuck(|_| ());
+                }
 
                 continue;
             }

@@ -48,7 +48,7 @@ impl AstPath {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.parts.is_empty()
+        self.prefix == AstPathPrefix::Implicit && self.parts.is_empty()
     }
 }
 
@@ -59,6 +59,9 @@ pub enum AstPathPrefix {
 
     /// A fully qualified crate name.
     Crates,
+
+    /// Implicitly relative to the current module.
+    Implicit,
 
     /// Relative to the current module.
     Self_,
