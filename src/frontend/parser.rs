@@ -10,15 +10,16 @@ use crate::{
 
 use std::fmt;
 
-use aunty::Obj;
+use aunty::{Obj, StrongObj};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use super::{
     ast::{
-        AstBinOpExpr, AstBinOpKind, AstCallExpr, AstCtorExpr, AstDotExpr, AstExpr, AstIndexExpr,
-        AstLiteralExpr, AstMultiPath, AstMultiPathList, AstParenExpr, AstPath, AstPathExpr,
-        AstPathPrefix, AstTupleExpr, AstType, AstTypeKind, AstUnaryNegExpr,
+        AstBinOpExpr, AstBinOpKind, AstBlockExpr, AstBody, AstCallExpr, AstCtorExpr, AstDotExpr,
+        AstExpr, AstIfExpr, AstIndexExpr, AstLetStatement, AstLiteralExpr, AstLoopExpr,
+        AstMultiPath, AstMultiPathList, AstParenExpr, AstPath, AstPathExpr, AstPathPrefix,
+        AstStatement, AstTupleExpr, AstType, AstTypeKind, AstUnaryNegExpr, AstWhileExpr,
     },
     token::{
         punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor, TokenGroup, TokenIdent,
@@ -32,7 +33,7 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fm
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
 
-    let expr = AstExpr::parse(&mut c);
+    let expr = AstBody::parse(&mut c);
 
     if !c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
         c.stuck(|_| ());
@@ -95,16 +96,22 @@ macro_rules! define_keywords {
 
 define_keywords! {
     pub enum AstKeyword {
-        Namespace = "namespace",
-        Fn = "fn",
-        Pub = "pub",
         Crate = "crate",
-        Super = "super",
-        SelfTy = "Self",
-        Self_ = "self",
-        In = "in",
-        True = "true",
+        Else = "else",
         False = "false",
+        Fn = "fn",
+        If = "if",
+        In = "in",
+        Let = "let",
+        Loop = "loop",
+        Mut = "mut",
+        Namespace = "namespace",
+        Pub = "pub",
+        Self_ = "self",
+        SelfTy = "Self",
+        Super = "super",
+        True = "true",
+        While = "while",
     }
 }
 
@@ -863,6 +870,94 @@ impl AstExpr {
             }
         }
 
+        // Match block expressions
+        if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+            let mut c = c.enter(group.cursor());
+
+            return AstBlockExpr {
+                body: AstBody::parse(&mut c),
+            }
+            .into();
+        }
+
+        // Match if, while, and loop expressions
+        if parse_keyword(c, AstKeyword::If).is_some() {
+            let condition = AstExpr::parse(c);
+
+            let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                c.stuck(|_| ());
+                return AstExpr::Placeholder;
+            };
+
+            let main_expr = StrongObj::new(AstIfExpr {
+                condition,
+                body: AstBody::parse(&mut c.enter(group.cursor())),
+                otherwise: None,
+            });
+
+            let mut curr_expr = main_expr.clone();
+
+            while parse_keyword(c, AstKeyword::Else).is_some() {
+                if parse_keyword(c, AstKeyword::If).is_some() {
+                    let condition = AstExpr::parse(c);
+
+                    let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                        return AstExpr::Placeholder;
+                    };
+
+                    let new_expr = StrongObj::new(AstIfExpr {
+                        condition,
+                        body: AstBody::parse(&mut c.enter(group.cursor())),
+                        otherwise: None,
+                    });
+                    curr_expr.get_mut().otherwise = Some(new_expr.clone().into());
+                    curr_expr = new_expr;
+                } else {
+                    let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                        c.stuck(|_| ());
+                        return AstExpr::Placeholder;
+                    };
+
+                    curr_expr.get_mut().otherwise = Some(
+                        AstBlockExpr {
+                            body: AstBody::parse(&mut c.enter(group.cursor())),
+                        }
+                        .into(),
+                    );
+                    break;
+                }
+            }
+
+            return main_expr.into();
+        }
+
+        if parse_keyword(c, AstKeyword::While).is_some() {
+            let condition = AstExpr::parse(c);
+
+            let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                c.stuck(|_| ());
+                return AstExpr::Placeholder;
+            };
+
+            return AstWhileExpr {
+                condition,
+                body: AstBody::parse(&mut c.enter(group.cursor())),
+            }
+            .into();
+        }
+
+        if parse_keyword(c, AstKeyword::Loop).is_some() {
+            let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                c.stuck(|_| ());
+                return AstExpr::Placeholder;
+            };
+
+            return AstLoopExpr {
+                body: AstBody::parse(&mut c.enter(group.cursor())),
+            }
+            .into();
+        }
+
         // Match literals
         if let Some(lit) = parse_str_lit(c, Symbol!("string literal")) {
             return AstLiteralExpr::String(*lit).into();
@@ -886,5 +981,95 @@ impl AstExpr {
 
         c.stuck(|_| ());
         AstExpr::Placeholder
+    }
+}
+
+// === Statements === //
+
+impl AstExpr {
+    pub fn needs_semi(&self) -> bool {
+        use AstExpr::*;
+
+        !matches!(self, Block(_) | If(_) | While(_) | Loop(_))
+    }
+}
+
+impl AstBody {
+    pub fn parse(c: &mut TokenSequence) -> Self {
+        let mut statements = Vec::new();
+        let mut awaiting_semi = None;
+
+        loop {
+            // Match extra `;`
+            if parse_punct(c, punct!(';')).is_some() {
+                awaiting_semi = None;
+                continue;
+            }
+
+            // Match EOF
+            if c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
+                break;
+            }
+
+            // Get stuck if we're missing a semicolon
+            if awaiting_semi.take() == Some(true) {
+                c.hint_stuck(
+                    c.next_span(),
+                    "expression expected semicolon before next expression",
+                );
+                c.stuck(|_| ());
+            }
+
+            // Match let statement
+            if parse_keyword(c, AstKeyword::Let).is_some() {
+                // Match optional mut
+                let mutable = parse_keyword(c, AstKeyword::Mut).is_some();
+
+                // Match name
+                let Some(name) = parse_identifier(c, Symbol!("variable name")) else {
+                    c.stuck_lookahead(|c| {
+                        (0..5).any(|_| {
+                            c.next()
+                                .and_then(Token::as_punct)
+                                .is_some_and(|p| p.char == punct!(';'))
+                        })
+                    });
+                    continue;
+                };
+
+                // Match optional equality
+                let initializer = parse_punct(c, punct!('=')).map(|_| AstExpr::parse(c));
+
+                // Match semicolon
+                if parse_punct(c, punct!(';')).is_none() {
+                    c.hint_stuck(
+                        c.next_span(),
+                        "let statement expect a semicolon at their end",
+                    );
+                    c.stuck(|_| ());
+                }
+
+                statements.push(AstStatement::Let(
+                    AstLetStatement {
+                        name,
+                        mutable,
+                        initializer,
+                    }
+                    .into(),
+                ));
+
+                continue;
+            }
+
+            // Match expression
+            let expr = AstExpr::parse(c);
+            awaiting_semi = Some(expr.needs_semi());
+            statements.push(AstStatement::Expr(expr));
+        }
+
+        Self {
+            statements,
+            last_stmt_trails: awaiting_semi.is_some(),
+        }
     }
 }

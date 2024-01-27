@@ -1,4 +1,23 @@
 // Whee!
 
+let foo = 3;
+let mut bar = true;
+let baz;
+
 ((1, true, foo, ()) + 3) * -4__2 + foo.bar.baz(3, true, 2,) /
-	Foo { foo: bar, baz: Baz { hehe }, }.baz() + -0xFF.@self() + 3.20.foo()[3[3].foo()[hehe][haha]()]
+	Foo { foo: bar, baz: Baz { hehe }, }.baz() + -0xFF.@self() + 3.20.foo()[3[3].foo()[hehe][haha]()];
+
+hehe;
+
+if true {
+	let foo = 3 + 2;
+	foo
+} else if false {
+	loop {}
+
+	while false {}
+} else {
+	let bar = baz;
+}
+
+haha

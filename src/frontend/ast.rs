@@ -106,6 +106,10 @@ pub enum AstExpr {
     Tuple(StrongObj<AstTupleExpr>),
     Paren(StrongObj<AstParenExpr>),
     Ctor(StrongObj<AstCtorExpr>),
+    Block(StrongObj<AstBlockExpr>),
+    If(StrongObj<AstIfExpr>),
+    While(StrongObj<AstWhileExpr>),
+    Loop(StrongObj<AstLoopExpr>),
 }
 
 impl From<StrongObj<AstPathExpr>> for AstExpr {
@@ -168,6 +172,30 @@ impl From<StrongObj<AstCtorExpr>> for AstExpr {
     }
 }
 
+impl From<StrongObj<AstBlockExpr>> for AstExpr {
+    fn from(value: StrongObj<AstBlockExpr>) -> Self {
+        Self::Block(value)
+    }
+}
+
+impl From<StrongObj<AstIfExpr>> for AstExpr {
+    fn from(value: StrongObj<AstIfExpr>) -> Self {
+        Self::If(value)
+    }
+}
+
+impl From<StrongObj<AstWhileExpr>> for AstExpr {
+    fn from(value: StrongObj<AstWhileExpr>) -> Self {
+        Self::While(value)
+    }
+}
+
+impl From<StrongObj<AstLoopExpr>> for AstExpr {
+    fn from(value: StrongObj<AstLoopExpr>) -> Self {
+        Self::Loop(value)
+    }
+}
+
 impl From<AstPathExpr> for AstExpr {
     fn from(value: AstPathExpr) -> Self {
         Self::Path(StrongObj::new(value))
@@ -225,6 +253,30 @@ impl From<AstParenExpr> for AstExpr {
 impl From<AstCtorExpr> for AstExpr {
     fn from(value: AstCtorExpr) -> Self {
         Self::Ctor(StrongObj::new(value))
+    }
+}
+
+impl From<AstBlockExpr> for AstExpr {
+    fn from(value: AstBlockExpr) -> Self {
+        Self::Block(StrongObj::new(value))
+    }
+}
+
+impl From<AstIfExpr> for AstExpr {
+    fn from(value: AstIfExpr) -> Self {
+        Self::If(StrongObj::new(value))
+    }
+}
+
+impl From<AstWhileExpr> for AstExpr {
+    fn from(value: AstWhileExpr) -> Self {
+        Self::While(StrongObj::new(value))
+    }
+}
+
+impl From<AstLoopExpr> for AstExpr {
+    fn from(value: AstLoopExpr) -> Self {
+        Self::Loop(StrongObj::new(value))
     }
 }
 
@@ -299,4 +351,48 @@ pub struct AstParenExpr {
 pub struct AstCtorExpr {
     pub item: AstPath,
     pub fields: Vec<(TokenIdent, AstExpr)>,
+}
+
+#[derive(Debug)]
+pub struct AstBlockExpr {
+    pub body: AstBody,
+}
+
+#[derive(Debug)]
+pub struct AstIfExpr {
+    pub condition: AstExpr,
+    pub body: AstBody,
+    pub otherwise: Option<AstExpr>,
+}
+
+#[derive(Debug)]
+pub struct AstWhileExpr {
+    pub condition: AstExpr,
+    pub body: AstBody,
+}
+
+#[derive(Debug)]
+pub struct AstLoopExpr {
+    pub body: AstBody,
+}
+
+// === Statements === ///
+
+#[derive(Debug, Clone)]
+pub struct AstBody {
+    pub statements: Vec<AstStatement>,
+    pub last_stmt_trails: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum AstStatement {
+    Let(StrongObj<AstLetStatement>),
+    Expr(AstExpr),
+}
+
+#[derive(Debug)]
+pub struct AstLetStatement {
+    pub name: TokenIdent,
+    pub mutable: bool,
+    pub initializer: Option<AstExpr>,
 }
