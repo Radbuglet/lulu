@@ -1,23 +1,23 @@
-// Whee!
+namespace util::rpc;
 
-let foo = 3;
-let mut bar = true;
-let baz;
+class RpcManager {
 
-((1, true, foo, ()) + 3) * -4__2 + foo.bar.baz(3, true, 2,) /
-	Foo { foo: bar, baz: Baz { hehe }, }.baz() + -0xFF.@self() + 3.20.foo()[3[3].foo()[hehe][haha]()];
-
-hehe;
-
-if true {
-	let foo = 3 + 2;
-	foo
-} else if false {
-	loop {}
-
-	while false {}
-} else {
-	let bar = baz;
 }
 
-haha
+impl Debug for RpcManager {
+	fn fmt(self, fmt) {
+		fmt.write("whee);
+	}
+}
+
+impl RpcManager {
+	pub fn new() -> Self {
+		Self {
+
+		}
+	}
+
+	pub fn send_rpc(self, msg: Array<u8>) {
+
+	}
+}

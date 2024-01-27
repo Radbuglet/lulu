@@ -7,6 +7,59 @@ use super::{
     token::{TokenCharLit, TokenIdent, TokenNumberLit, TokenStringLit},
 };
 
+// === Helpers === //
+
+macro_rules! define_convertible_enum {
+	(
+		$(#[$attr:meta])*
+		$vis:vis enum $enum_name:ident {
+			$($name:ident $(($inner:ty))?),*
+			$(,)?
+		}
+	) => {
+		$(#[$attr])*
+		$vis enum $enum_name {
+			$($name$((StrongObj<$inner>))?,)*
+		}
+
+		$($(
+			impl From<StrongObj<$inner>> for $enum_name {
+				fn from(value: StrongObj<$inner>) -> Self {
+					Self::$name(value)
+				}
+			}
+
+			impl From<$inner> for $enum_name {
+				fn from(value: $inner) -> Self {
+					Self::$name(StrongObj::new(value))
+				}
+			}
+		)?)*
+	};
+}
+
+// === Items === //
+
+#[derive(Debug)]
+pub struct AstFileRoot {
+    pub items: Vec<AstItem>,
+}
+
+define_convertible_enum! {
+    #[derive(Debug, Clone)]
+    pub enum AstItem {
+        Function(AstFunctionItem),
+    }
+}
+
+#[derive(Debug)]
+pub struct AstFunctionItem {
+    pub name: TokenIdent,
+    pub args: Vec<(TokenIdent, AstType)>,
+    pub result: AstType,
+    pub body: AstExpr,
+}
+
 // === Paths === //
 
 #[derive(Debug, Clone)]
@@ -91,192 +144,35 @@ pub enum AstTypeKind {
     Adt(AstPath),
 }
 
+impl AstType {
+    pub fn new_unit() -> Self {
+        Self {
+            kind: AstTypeKind::Tuple,
+            generics: Box::from_iter([]),
+        }
+    }
+}
+
 // === Expressions === //
 
-#[derive(Debug, Clone)]
-pub enum AstExpr {
-    Placeholder,
-    Path(StrongObj<AstPathExpr>),
-    Dot(StrongObj<AstDotExpr>),
-    Call(StrongObj<AstCallExpr>),
-    Index(StrongObj<AstIndexExpr>),
-    BinOp(StrongObj<AstBinOpExpr>),
-    UnaryNeg(StrongObj<AstUnaryNegExpr>),
-    Literal(StrongObj<AstLiteralExpr>),
-    Tuple(StrongObj<AstTupleExpr>),
-    Paren(StrongObj<AstParenExpr>),
-    Ctor(StrongObj<AstCtorExpr>),
-    Block(StrongObj<AstBlockExpr>),
-    If(StrongObj<AstIfExpr>),
-    While(StrongObj<AstWhileExpr>),
-    Loop(StrongObj<AstLoopExpr>),
-}
-
-impl From<StrongObj<AstPathExpr>> for AstExpr {
-    fn from(value: StrongObj<AstPathExpr>) -> Self {
-        Self::Path(value)
-    }
-}
-
-impl From<StrongObj<AstDotExpr>> for AstExpr {
-    fn from(value: StrongObj<AstDotExpr>) -> Self {
-        Self::Dot(value)
-    }
-}
-
-impl From<StrongObj<AstCallExpr>> for AstExpr {
-    fn from(value: StrongObj<AstCallExpr>) -> Self {
-        Self::Call(value)
-    }
-}
-
-impl From<StrongObj<AstIndexExpr>> for AstExpr {
-    fn from(value: StrongObj<AstIndexExpr>) -> Self {
-        Self::Index(value)
-    }
-}
-
-impl From<StrongObj<AstBinOpExpr>> for AstExpr {
-    fn from(value: StrongObj<AstBinOpExpr>) -> Self {
-        Self::BinOp(value)
-    }
-}
-
-impl From<StrongObj<AstUnaryNegExpr>> for AstExpr {
-    fn from(value: StrongObj<AstUnaryNegExpr>) -> Self {
-        Self::UnaryNeg(value)
-    }
-}
-
-impl From<StrongObj<AstLiteralExpr>> for AstExpr {
-    fn from(value: StrongObj<AstLiteralExpr>) -> Self {
-        Self::Literal(value)
-    }
-}
-
-impl From<StrongObj<AstTupleExpr>> for AstExpr {
-    fn from(value: StrongObj<AstTupleExpr>) -> Self {
-        Self::Tuple(value)
-    }
-}
-
-impl From<StrongObj<AstParenExpr>> for AstExpr {
-    fn from(value: StrongObj<AstParenExpr>) -> Self {
-        Self::Paren(value)
-    }
-}
-
-impl From<StrongObj<AstCtorExpr>> for AstExpr {
-    fn from(value: StrongObj<AstCtorExpr>) -> Self {
-        Self::Ctor(value)
-    }
-}
-
-impl From<StrongObj<AstBlockExpr>> for AstExpr {
-    fn from(value: StrongObj<AstBlockExpr>) -> Self {
-        Self::Block(value)
-    }
-}
-
-impl From<StrongObj<AstIfExpr>> for AstExpr {
-    fn from(value: StrongObj<AstIfExpr>) -> Self {
-        Self::If(value)
-    }
-}
-
-impl From<StrongObj<AstWhileExpr>> for AstExpr {
-    fn from(value: StrongObj<AstWhileExpr>) -> Self {
-        Self::While(value)
-    }
-}
-
-impl From<StrongObj<AstLoopExpr>> for AstExpr {
-    fn from(value: StrongObj<AstLoopExpr>) -> Self {
-        Self::Loop(value)
-    }
-}
-
-impl From<AstPathExpr> for AstExpr {
-    fn from(value: AstPathExpr) -> Self {
-        Self::Path(StrongObj::new(value))
-    }
-}
-
-impl From<AstDotExpr> for AstExpr {
-    fn from(value: AstDotExpr) -> Self {
-        Self::Dot(StrongObj::new(value))
-    }
-}
-
-impl From<AstCallExpr> for AstExpr {
-    fn from(value: AstCallExpr) -> Self {
-        Self::Call(StrongObj::new(value))
-    }
-}
-
-impl From<AstIndexExpr> for AstExpr {
-    fn from(value: AstIndexExpr) -> Self {
-        Self::Index(StrongObj::new(value))
-    }
-}
-
-impl From<AstBinOpExpr> for AstExpr {
-    fn from(value: AstBinOpExpr) -> Self {
-        Self::BinOp(StrongObj::new(value))
-    }
-}
-
-impl From<AstUnaryNegExpr> for AstExpr {
-    fn from(value: AstUnaryNegExpr) -> Self {
-        Self::UnaryNeg(StrongObj::new(value))
-    }
-}
-
-impl From<AstLiteralExpr> for AstExpr {
-    fn from(value: AstLiteralExpr) -> Self {
-        Self::Literal(StrongObj::new(value))
-    }
-}
-
-impl From<AstTupleExpr> for AstExpr {
-    fn from(value: AstTupleExpr) -> Self {
-        Self::Tuple(StrongObj::new(value))
-    }
-}
-
-impl From<AstParenExpr> for AstExpr {
-    fn from(value: AstParenExpr) -> Self {
-        Self::Paren(StrongObj::new(value))
-    }
-}
-
-impl From<AstCtorExpr> for AstExpr {
-    fn from(value: AstCtorExpr) -> Self {
-        Self::Ctor(StrongObj::new(value))
-    }
-}
-
-impl From<AstBlockExpr> for AstExpr {
-    fn from(value: AstBlockExpr) -> Self {
-        Self::Block(StrongObj::new(value))
-    }
-}
-
-impl From<AstIfExpr> for AstExpr {
-    fn from(value: AstIfExpr) -> Self {
-        Self::If(StrongObj::new(value))
-    }
-}
-
-impl From<AstWhileExpr> for AstExpr {
-    fn from(value: AstWhileExpr) -> Self {
-        Self::While(StrongObj::new(value))
-    }
-}
-
-impl From<AstLoopExpr> for AstExpr {
-    fn from(value: AstLoopExpr) -> Self {
-        Self::Loop(StrongObj::new(value))
+define_convertible_enum! {
+    #[derive(Debug, Clone)]
+    pub enum AstExpr {
+        Placeholder,
+        Path(AstPathExpr),
+        Dot(AstDotExpr),
+        Call(AstCallExpr),
+        Index(AstIndexExpr),
+        BinOp(AstBinOpExpr),
+        UnaryNeg(AstUnaryNegExpr),
+        Literal(AstLiteralExpr),
+        Tuple(AstTupleExpr),
+        Paren(AstParenExpr),
+        Ctor(AstCtorExpr),
+        Block(AstBlockExpr),
+        If(AstIfExpr),
+        While(AstWhileExpr),
+        Loop(AstLoopExpr),
     }
 }
 

@@ -17,9 +17,10 @@ use smallvec::SmallVec;
 use super::{
     ast::{
         AstBinOpExpr, AstBinOpKind, AstBlockExpr, AstBody, AstCallExpr, AstCtorExpr, AstDotExpr,
-        AstExpr, AstIfExpr, AstIndexExpr, AstLetStatement, AstLiteralExpr, AstLoopExpr,
-        AstMultiPath, AstMultiPathList, AstParenExpr, AstPath, AstPathExpr, AstPathPrefix,
-        AstStatement, AstTupleExpr, AstType, AstTypeKind, AstUnaryNegExpr, AstWhileExpr,
+        AstExpr, AstFileRoot, AstFunctionItem, AstIfExpr, AstIndexExpr, AstLetStatement,
+        AstLiteralExpr, AstLoopExpr, AstMultiPath, AstMultiPathList, AstParenExpr, AstPath,
+        AstPathExpr, AstPathPrefix, AstStatement, AstTupleExpr, AstType, AstTypeKind,
+        AstUnaryNegExpr, AstWhileExpr,
     },
     token::{
         punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor, TokenGroup, TokenIdent,
@@ -29,11 +30,11 @@ use super::{
 
 // === Driver === //
 
-pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> impl fmt::Debug {
+pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> AstFileRoot {
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
 
-    let expr = AstBody::parse(&mut c);
+    let expr = AstFileRoot::parse(&mut c);
 
     if !c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
         c.stuck(|_| ());
@@ -176,6 +177,14 @@ fn parse_puncts(c: &mut TokenSequence, name: Symbol, puncts: &[PunctChar]) -> Op
 
 fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
     parse_puncts(c, Symbol!("`::`"), &[punct!(':'), punct!(':')])
+}
+
+fn parse_wide_arrow(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, Symbol!("`=>`"), &[punct!('='), punct!('>')])
+}
+
+fn parse_thin_arrow(c: &mut TokenSequence) -> Option<Span> {
+    parse_puncts(c, Symbol!("`->`"), &[punct!('-'), punct!('>')])
 }
 
 fn parse_punct(c: &mut TokenSequence, char: PunctChar) -> Option<Span> {
@@ -448,7 +457,133 @@ impl AstType {
     }
 }
 
-// === Expression === //
+// === Items === //
+
+impl AstFileRoot {
+    pub fn parse(c: &mut TokenSequence) -> Self {
+        let mut items = Vec::new();
+
+        loop {
+            // Match EOF
+            if c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
+                break;
+            }
+
+            // Match function
+            if let Some(func) = AstFunctionItem::parse(c) {
+                let Ok(func) = func else {
+                    continue;
+                };
+
+                items.push(func.into());
+                continue;
+            }
+
+            // We're stuck!
+            c.stuck(|c| {
+                let _ = c.next();
+            });
+        }
+
+        Self { items }
+    }
+}
+
+impl AstFunctionItem {
+    pub fn parse(c: &mut TokenSequence) -> Option<Result<Self, ()>> {
+        // Match `fn` keyword
+        let _kw = parse_keyword(c, AstKeyword::Fn)?;
+
+        // Match function name
+        let Some(name) = parse_identifier(c, Symbol!("function name")) else {
+            c.stuck(|_| ());
+            return Some(Err(()));
+        };
+
+        // Match argument list
+        let Some(args_group) = parse_group(c, GroupDelimiter::Paren) else {
+            c.stuck(|_| ());
+            return Some(Err(()));
+        };
+
+        let args = {
+            let mut c = c.enter(args_group.cursor());
+            let mut args = Vec::new();
+
+            loop {
+                // Match name
+                let Some(arg_name) = parse_identifier(&mut c, Symbol!("argument name")) else {
+                    break;
+                };
+
+                // Match type
+                if parse_punct(&mut c, punct!(':')).is_none() {
+                    c.stuck(|_| ());
+                    break;
+                }
+
+                let Some(arg_ty) = AstType::parse(&mut c) else {
+                    c.stuck(|_| ());
+                    break;
+                };
+
+                args.push((arg_name, arg_ty));
+
+                // Match comma
+                if parse_punct(&mut c, punct!(',')).is_none() {
+                    break;
+                }
+            }
+
+            // Match EOF
+            if !c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
+                c.stuck(|_| ());
+            }
+
+            args
+        };
+
+        // Match result hint
+        let result = if parse_thin_arrow(c).is_some() {
+            let Some(ty) = AstType::parse(c) else {
+                c.stuck(|_| ());
+                return Some(Err(()));
+            };
+
+            ty
+        } else {
+            AstType::new_unit()
+        };
+
+        // Match body
+        let body = if parse_wide_arrow(c).is_some() {
+            let expr = AstExpr::parse(c);
+
+            if parse_punct(c, punct!(';')).is_none() {
+                c.stuck(|_| ());
+            }
+
+            expr
+        } else if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+            AstBlockExpr {
+                body: AstBody::parse(&mut c.enter(group.cursor())),
+            }
+            .into()
+        } else {
+            c.stuck(|_| ());
+            return Some(Err(()));
+        };
+
+        Some(Ok(Self {
+            name,
+            args,
+            result,
+            body,
+        }))
+    }
+}
+
+// === Expressions === //
 
 impl AstExpr {
     pub fn parse(c: &mut TokenSequence) -> Self {

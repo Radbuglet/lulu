@@ -1,5 +1,6 @@
 symbolique::define_table! {
     pub struct Symbol {
+        "`->`",
         ")",
         "`_`",
         "`-`",
@@ -34,6 +35,7 @@ symbolique::define_table! {
         "`+`",
         "`<`",
         "`=`",
+        "`=>`",
         "`>`",
         "`|`",
         "`~`",
@@ -63,6 +65,7 @@ symbolique::define_table! {
         "`u`",
         "`while`",
         "`x`",
+        "argument name",
         "ASCII escape code",
         "binary digit",
         "binary operator",
@@ -80,6 +83,7 @@ symbolique::define_table! {
         "false",
         "field name",
         "fn",
+        "function name",
         "generic list",
         "hexadecimal digit",
         "identifier",
