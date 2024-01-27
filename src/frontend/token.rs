@@ -558,11 +558,11 @@ fn parse_close_delimiter(c: &mut FileSequence, expected: GroupDelimiter) -> Opti
     None
 }
 
-fn parse_punct_char(c: &mut FileSequence, allow_period: bool) -> Option<PunctChar> {
+fn parse_punct_char(c: &mut FileSequence, normal_mode: bool) -> Option<PunctChar> {
     c.expect(Symbol!("punctuation"), |c| {
-        c.next()
-            .and_then(PunctChar::from_char)
-            .filter(|&c| allow_period || c != punct!('.'))
+        c.next().and_then(PunctChar::from_char).filter(|ch| {
+            normal_mode || *ch != punct!('.') || c.peek().is_some_and(|c| !c.is_ascii_digit())
+        })
     })
 }
 
@@ -878,7 +878,6 @@ fn parse_numeric_literal(c: &mut FileSequence) -> Option<TokenNumberLit> {
             builder.push('.');
 
             // Match zero or more fractional digits
-            // FIXME: This greedily parses letters, denying the syntax `32.foo`
             parse_digits(c, &mut builder, DigitKind::Decimal);
         }
     } else {

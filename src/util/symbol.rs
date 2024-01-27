@@ -9,6 +9,7 @@ symbolique::define_table! {
         "`:`",
         "`!`",
         "`?`",
+        "`.` followed by an identifier",
         "`.`",
         "`'`",
         "`(`",
