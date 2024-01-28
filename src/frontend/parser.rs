@@ -2,7 +2,7 @@ use crate::{
     frontend::ast::AstPathPart,
     util::{
         diag::DiagnosticReporter,
-        parser::{ForkableCursor, ParseContext, ParseCursor},
+        parser::{ForkableCursor, LookBackParseCursor, OptionParser, ParseContext, ParseCursor},
         span::Span,
         symbol::Symbol,
     },
@@ -23,8 +23,8 @@ use super::{
         AstUnaryNegExpr, AstWhileExpr,
     },
     token::{
-        punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor, TokenGroup, TokenIdent,
-        TokenNumberLit, TokenSequence, TokenStringLit,
+        make_token_parser, punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor,
+        TokenGroup, TokenIdent, TokenNumberLit, TokenParser, TokenSequence, TokenStringLit,
     },
 };
 
@@ -112,37 +112,29 @@ define_keywords! {
 
 // === Parsing Helpers === //
 
-fn parse_identifier(c: &mut TokenSequence, name: Symbol) -> Option<TokenIdent> {
-    let ident = c.expect(name, |c| {
-        c.next()
-            .and_then(Token::as_ident)
-            .copied()
-            .filter(|ident| ident.is_raw || AstKeyword::from_sym(ident.text).is_none())
-    });
+fn identifier(name: Symbol) -> impl TokenParser<Output = Option<TokenIdent>> {
+    make_token_parser(name, |c: &mut TokenCursor<'_>, hint| {
+        let ident = *c.next()?.as_ident()?;
 
-    if ident.is_none() {
-        c.hint_stuck_if_passes(
-            "this identifier has been reserved as a keyword; prefix it with `@` to interpret it as an identifier",
-            |c| c.next().is_some_and(|t| t.as_ident().is_some()),
-        );
-    }
+        if !ident.is_raw && AstKeyword::from_sym(ident.text).is_some() {
+            hint.hint(c.prev_span(), "this identifier has been reserved as a keyword; prefix it with `@` to interpret it as an identifier");
+        }
 
-    ident
-}
-
-fn parse_keyword(c: &mut TokenSequence, kw: AstKeyword) -> Option<TokenIdent> {
-    let kw_text = kw.to_sym();
-
-    c.expect(kw.to_name_sym(), |c| {
-        c.next()
-            .and_then(Token::as_ident)
-            .copied()
-            .filter(|ident| !ident.is_raw && ident.text == kw_text)
+        Some(ident)
     })
 }
 
-fn match_puncts(c: &mut TokenCursor, puncts: &[PunctChar]) -> Option<Span> {
-    c.lookahead(|c| {
+fn keyword(kw: AstKeyword) -> impl TokenParser<Output = Option<TokenIdent>> {
+    make_token_parser(kw.to_name_sym(), move |c, _| {
+        c.next()
+            .and_then(Token::as_ident)
+            .copied()
+            .filter(|ident| !ident.is_raw && ident.text == kw.to_sym())
+    })
+}
+
+fn punct_seq(name: Symbol, puncts: &[PunctChar]) -> impl TokenParser<Output = Option<Span>> + '_ {
+    make_token_parser(name, move |c, _| {
         let start = c.next_span();
         let mut last = start;
 
@@ -165,24 +157,28 @@ fn match_puncts(c: &mut TokenCursor, puncts: &[PunctChar]) -> Option<Span> {
     })
 }
 
-fn parse_puncts(c: &mut TokenSequence, name: Symbol, puncts: &[PunctChar]) -> Option<Span> {
-    c.expect(name, |c| match_puncts(c, puncts))
+fn turbo() -> impl TokenParser<Output = Option<Span>> {
+    punct_seq(Symbol!("`::`"), &[punct!(':'), punct!(':')])
 }
 
-fn parse_turbo(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`::`"), &[punct!(':'), punct!(':')])
+fn wide_arrow() -> impl TokenParser<Output = Option<Span>> {
+    punct_seq(Symbol!("`=>`"), &[punct!('='), punct!('>')])
 }
 
-fn parse_wide_arrow(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`=>`"), &[punct!('='), punct!('>')])
+fn thin_arrow() -> impl TokenParser<Output = Option<Span>> {
+    punct_seq(Symbol!("`->`"), &[punct!('-'), punct!('>')])
 }
 
-fn parse_thin_arrow(c: &mut TokenSequence) -> Option<Span> {
-    parse_puncts(c, Symbol!("`->`"), &[punct!('-'), punct!('>')])
+fn short_and() -> impl TokenParser<Output = Option<Span>> {
+    punct_seq(Symbol!("`&&`"), &[punct!('&'), punct!('&')])
 }
 
-fn parse_punct(c: &mut TokenSequence, char: PunctChar) -> Option<Span> {
-    c.expect(char.as_char_name(), |c| {
+fn short_or() -> impl TokenParser<Output = Option<Span>> {
+    punct_seq(Symbol!("`||`"), &[punct!('|'), punct!('|')])
+}
+
+fn punct(char: PunctChar) -> impl TokenParser<Output = Option<Span>> {
+    make_token_parser(char.as_char_name(), move |c, _| {
         let span = c.next_span();
         c.next()
             .and_then(Token::as_punct)
@@ -191,7 +187,7 @@ fn parse_punct(c: &mut TokenSequence, char: PunctChar) -> Option<Span> {
     })
 }
 
-fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Option<&'a TokenGroup> {
+fn del_group(delimiter: GroupDelimiter) -> impl TokenParser<Output = Option<TokenGroup>> {
     let expectation = match delimiter {
         GroupDelimiter::Brace => Symbol!("`{`"),
         GroupDelimiter::Bracket => Symbol!("`[`"),
@@ -199,10 +195,11 @@ fn parse_group<'a>(c: &mut TokenSequence<'a>, delimiter: GroupDelimiter) -> Opti
         GroupDelimiter::File => unreachable!(),
     };
 
-    c.expect(expectation, |c| {
+    make_token_parser(expectation, move |c, _| {
         c.next()
             .and_then(Token::as_group)
             .filter(|g| g.delimiter == delimiter)
+            .cloned()
     })
 }
 
@@ -252,7 +249,7 @@ impl AstPath {
             // If root prefixes are permitted here...
             if is_root {
                 // Match the `crate` prefix
-                if let Some(ident) = parse_keyword(c, AstKeyword::Crate) {
+                if let Some(ident) = keyword(AstKeyword::Crate).expect(c) {
                     break 'parse_prefix (
                         AstPathPrefix::Crate(ident.span),
                         Phase::WaitingForTurbo,
@@ -261,12 +258,12 @@ impl AstPath {
                 }
 
                 // Match the `::` prefix
-                if let Some(span) = parse_turbo(c) {
+                if let Some(span) = turbo().expect(c) {
                     break 'parse_prefix (AstPathPrefix::Crates(span), Phase::WaitingForPart, true);
                 }
 
                 // Match the `self` prefix
-                if let Some(ident) = parse_keyword(c, AstKeyword::Self_) {
+                if let Some(ident) = keyword(AstKeyword::Self_).expect(c) {
                     break 'parse_prefix (
                         AstPathPrefix::Self_(ident.span),
                         Phase::WaitingForTurbo,
@@ -288,16 +285,16 @@ impl AstPath {
         loop {
             match phase {
                 Phase::WaitingForTurbo => {
-                    if parse_turbo(c).is_some() {
+                    if turbo().expect(c).is_some() {
                         phase = Phase::WaitingForPart;
                         expecting_something = true;
                         continue;
                     }
                 }
                 Phase::WaitingForPart => {
-                    if let Some(part) = parse_identifier(c, Symbol!("path part")).or_else(|| {
+                    if let Some(part) = identifier(Symbol!("path part")).expect(c).or_else(|| {
                         is_root
-                            .then(|| parse_keyword(c, AstKeyword::Super))
+                            .then(|| keyword(AstKeyword::Super).expect(c))
                             .flatten()
                     }) {
                         parts.push(AstPathPart(part));
@@ -334,7 +331,7 @@ impl AstMultiPath {
         let imports = if expecting_part || base.is_empty() {
             let start_span = c.next_span();
 
-            if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+            if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
                 let _wp = c.context().while_parsing(start_span, Symbol!("path tree"));
                 let mut parts = Vec::new();
                 let mut c = c.enter(group.cursor());
@@ -342,7 +339,7 @@ impl AstMultiPath {
                 // Match path
                 loop {
                     // Match separating comma
-                    if !parts.is_empty() && parse_punct(&mut c, punct!(',')).is_none() {
+                    if !parts.is_empty() && punct(punct!(',')).expect(&mut c).is_none() {
                         break;
                     }
 
@@ -360,7 +357,7 @@ impl AstMultiPath {
                 }
 
                 AstMultiPathList::List(Box::from_iter(parts))
-            } else if parse_punct(c, punct!('*')).is_some() {
+            } else if punct(punct!('*')).expect(c).is_some() {
                 AstMultiPathList::Wildcard
             } else {
                 if !base.is_empty() {
@@ -386,7 +383,7 @@ impl AstType {
         // Match suffixes
         loop {
             // Match option
-            if parse_punct(c, punct!('?')).is_some() {
+            if punct(punct!('?')).expect(c).is_some() {
                 base = Self {
                     kind: AstTypeKind::Option,
                     generics: Box::from_iter([base]),
@@ -409,7 +406,7 @@ impl AstType {
             let mut parts = Vec::new();
 
             let generic_start = c.next_span();
-            if parse_punct(c, punct!('<')).is_some() {
+            if punct(punct!('<')).expect(c).is_some() {
                 let _wp = c
                     .context()
                     .while_parsing(generic_start, Symbol!("generic list"));
@@ -423,13 +420,13 @@ impl AstType {
                     parts.push(path);
 
                     // Match comma
-                    if parse_punct(c, punct!(',')).is_none() {
+                    if punct(punct!(',')).expect(c).is_none() {
                         break;
                     }
                 }
 
                 // Match close generic
-                if parse_punct(c, punct!('>')).is_none() {
+                if punct(punct!('>')).expect(c).is_none() {
                     c.stuck(|_| ());
                 }
             }
@@ -441,7 +438,7 @@ impl AstType {
         }
 
         // Match tuple
-        if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
+        if let Some(group) = del_group(GroupDelimiter::Paren).expect(c) {
             let _wp = c.context().while_parsing(start, Symbol!("tuple type"));
             let mut c = c.enter(group.cursor());
             let mut parts = Vec::new();
@@ -454,7 +451,7 @@ impl AstType {
                 parts.push(ty);
 
                 // Match comma
-                if parse_punct(&mut c, punct!(',')).is_none() {
+                if punct(punct!(',')).expect(&mut c).is_none() {
                     break;
                 }
             }
@@ -513,16 +510,16 @@ impl AstFunctionItem {
         let start = c.next_span();
 
         // Match `fn` keyword
-        let _kw = parse_keyword(c, AstKeyword::Fn)?;
+        let _kw = keyword(AstKeyword::Fn).expect(c)?;
 
         // Match function name
-        let Some(name) = parse_identifier(c, Symbol!("function name")) else {
+        let Some(name) = identifier(Symbol!("function name")).expect(c) else {
             c.stuck(|_| ());
             return Some(Err(()));
         };
 
         // Match argument list
-        let Some(args_group) = parse_group(c, GroupDelimiter::Paren) else {
+        let Some(args_group) = del_group(GroupDelimiter::Paren).expect(c) else {
             c.stuck(|_| ());
             return Some(Err(()));
         };
@@ -533,12 +530,12 @@ impl AstFunctionItem {
 
             loop {
                 // Match name
-                let Some(arg_name) = parse_identifier(&mut c, Symbol!("argument name")) else {
+                let Some(arg_name) = identifier(Symbol!("argument name")).expect(&mut c) else {
                     break;
                 };
 
                 // Match type
-                if parse_punct(&mut c, punct!(':')).is_none() {
+                if punct(punct!(':')).expect(&mut c).is_none() {
                     c.stuck(|_| ());
                     break;
                 }
@@ -551,7 +548,7 @@ impl AstFunctionItem {
                 args.push((arg_name, arg_ty));
 
                 // Match comma
-                if parse_punct(&mut c, punct!(',')).is_none() {
+                if punct(punct!(',')).expect(&mut c).is_none() {
                     break;
                 }
             }
@@ -565,7 +562,7 @@ impl AstFunctionItem {
         };
 
         // Match result hint
-        let result = if parse_thin_arrow(c).is_some() {
+        let result = if thin_arrow().expect(c).is_some() {
             let Some(ty) = AstType::parse(c) else {
                 c.stuck(|_| ());
                 return Some(Err(()));
@@ -577,15 +574,15 @@ impl AstFunctionItem {
         };
 
         // Match body
-        let body = if parse_wide_arrow(c).is_some() {
+        let body = if wide_arrow().expect(c).is_some() {
             let expr = AstExpr::parse(c);
 
-            if parse_punct(c, punct!(';')).is_none() {
+            if punct(punct!(';')).expect(c).is_none() {
                 c.stuck(|_| ());
             }
 
             expr
-        } else if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+        } else if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
             AstBlockExpr {
                 body: AstBody::parse(&mut c.enter(group.cursor())),
             }
@@ -813,11 +810,11 @@ impl AstExpr {
 
     fn match_bin_op(c: &mut TokenCursor) -> Option<AstBinOpKind> {
         // Parse multi-puncts
-        if match_puncts(c, &[punct!('&'), punct!('&')]).is_some() {
+        if short_and().match_(c).is_some() {
             return Some(AstBinOpKind::ShortAnd);
         }
 
-        if match_puncts(c, &[punct!('|'), punct!('|')]).is_some() {
+        if short_or().match_(c).is_some() {
             return Some(AstBinOpKind::ShortOr);
         }
 
@@ -854,7 +851,7 @@ impl AstExpr {
     }
 
     fn parse_atom(c: &mut TokenSequence) -> Self {
-        if parse_punct(c, punct!('-')).is_some() {
+        if punct(punct!('-')).expect(c).is_some() {
             AstUnaryNegExpr {
                 expr: Self::parse_atom_base_with_post(c),
             }
@@ -869,8 +866,8 @@ impl AstExpr {
 
         loop {
             // Match member access
-            if parse_punct(c, punct!('.')).is_some() {
-                let Some(member) = parse_identifier(c, Symbol!("member name")) else {
+            if punct(punct!('.')).expect(c).is_some() {
+                let Some(member) = identifier(Symbol!("member name")).expect(c) else {
                     c.stuck(|_| ());
                     continue;
                 };
@@ -880,7 +877,7 @@ impl AstExpr {
             }
 
             // Match calls
-            if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
+            if let Some(group) = del_group(GroupDelimiter::Paren).expect(c) {
                 let mut c = c.enter(group.cursor());
                 let mut args = Vec::new();
 
@@ -894,7 +891,7 @@ impl AstExpr {
                     args.push(AstExpr::parse(&mut c));
 
                     // Match comma
-                    if parse_punct(&mut c, punct!(',')).is_none() {
+                    if punct(punct!(',')).expect(&mut c).is_none() {
                         if !c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
                             c.stuck(|_| ());
                         }
@@ -915,7 +912,7 @@ impl AstExpr {
             }
 
             // Match indexes
-            if let Some(group) = parse_group(c, GroupDelimiter::Bracket) {
+            if let Some(group) = del_group(GroupDelimiter::Bracket).expect(c) {
                 let mut c = c.enter(group.cursor());
 
                 expr = AstIndexExpr {
@@ -939,7 +936,7 @@ impl AstExpr {
 
     fn parse_atom_base(c: &mut TokenSequence) -> Self {
         // Match parenthesized expression
-        if let Some(group) = parse_group(c, GroupDelimiter::Paren) {
+        if let Some(group) = del_group(GroupDelimiter::Paren).expect(c) {
             // Parse a sequence of expressions
             let mut c = c.enter(group.cursor());
             let mut items = SmallVec::<[AstExpr; 1]>::new();
@@ -960,7 +957,7 @@ impl AstExpr {
                 items.push(AstExpr::parse(&mut c));
 
                 // Match the delimiting comma
-                if parse_punct(&mut c, punct!(',')).is_none() {
+                if punct(punct!(',')).expect(&mut c).is_none() {
                     // If it's missing, match the EOS
                     if !c.expect(Symbol!("`)`"), |c| c.next().is_none()) {
                         c.stuck(|_| ());
@@ -984,19 +981,19 @@ impl AstExpr {
         // Match path
         if let Some(path) = AstPath::parse(c) {
             // Match structure creation
-            if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+            if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
                 let mut c = c.enter(group.cursor());
 
                 let mut fields = Vec::new();
 
                 loop {
                     // Match field name
-                    let Some(field) = parse_identifier(&mut c, Symbol!("field name")) else {
+                    let Some(field) = identifier(Symbol!("field name")).expect(&mut c) else {
                         break;
                     };
 
                     // Try to match explicit value
-                    let value = if parse_punct(&mut c, punct!(':')).is_some() {
+                    let value = if punct(punct!(':')).expect(&mut c).is_some() {
                         AstExpr::parse(&mut c)
                     } else {
                         AstPathExpr {
@@ -1008,7 +1005,7 @@ impl AstExpr {
                     fields.push((field, value));
 
                     // Match comma
-                    if parse_punct(&mut c, punct!(',')).is_none() {
+                    if punct(punct!(',')).expect(&mut c).is_none() {
                         break;
                     }
                 }
@@ -1025,7 +1022,7 @@ impl AstExpr {
         }
 
         // Match block expressions
-        if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+        if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
             let mut c = c.enter(group.cursor());
 
             return AstBlockExpr {
@@ -1035,12 +1032,12 @@ impl AstExpr {
         }
 
         // Match `if` expressions
-        if parse_keyword(c, AstKeyword::If).is_some() {
+        if keyword(AstKeyword::If).expect(c).is_some() {
             // Match the looping condition expression
             let condition = AstExpr::parse(c);
 
             // Match the main loop brace
-            let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+            let Some(group) = del_group(GroupDelimiter::Brace).expect(c) else {
                 c.stuck(|_| ());
                 return AstExpr::Malformed;
             };
@@ -1054,12 +1051,12 @@ impl AstExpr {
 
             let mut curr_expr = main_expr.clone();
 
-            while parse_keyword(c, AstKeyword::Else).is_some() {
+            while keyword(AstKeyword::Else).expect(c).is_some() {
                 // Match an `else if`.
-                if parse_keyword(c, AstKeyword::If).is_some() {
+                if keyword(AstKeyword::If).expect(c).is_some() {
                     let condition = AstExpr::parse(c);
 
-                    let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                    let Some(group) = del_group(GroupDelimiter::Brace).expect(c) else {
                         return AstExpr::Malformed;
                     };
 
@@ -1072,7 +1069,7 @@ impl AstExpr {
                     curr_expr = new_expr;
                 } else {
                     // Otherwise, we're matching a regular `else`.
-                    let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+                    let Some(group) = del_group(GroupDelimiter::Brace).expect(c) else {
                         c.stuck(|_| ());
                         return AstExpr::Malformed;
                     };
@@ -1091,10 +1088,10 @@ impl AstExpr {
         }
 
         // Match a `while` loop
-        if parse_keyword(c, AstKeyword::While).is_some() {
+        if keyword(AstKeyword::While).expect(c).is_some() {
             let condition = AstExpr::parse(c);
 
-            let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+            let Some(group) = del_group(GroupDelimiter::Brace).expect(c) else {
                 c.stuck(|_| ());
                 return AstExpr::Malformed;
             };
@@ -1107,8 +1104,8 @@ impl AstExpr {
         }
 
         // Match a `loop` loop
-        if parse_keyword(c, AstKeyword::Loop).is_some() {
-            let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
+        if keyword(AstKeyword::Loop).expect(c).is_some() {
+            let Some(group) = del_group(GroupDelimiter::Brace).expect(c) else {
                 c.stuck(|_| ());
                 return AstExpr::Malformed;
             };
@@ -1132,11 +1129,11 @@ impl AstExpr {
             return AstLiteralExpr::Number(*lit).into();
         }
 
-        if let Some(ident) = parse_keyword(c, AstKeyword::True) {
+        if let Some(ident) = keyword(AstKeyword::True).expect(c) {
             return AstLiteralExpr::Bool(ident.span, true).into();
         }
 
-        if let Some(ident) = parse_keyword(c, AstKeyword::False) {
+        if let Some(ident) = keyword(AstKeyword::False).expect(c) {
             return AstLiteralExpr::Bool(ident.span, false).into();
         }
 
@@ -1162,7 +1159,7 @@ impl AstBody {
 
         loop {
             // Match extra `;`
-            if parse_punct(c, punct!(';')).is_some() {
+            if punct(punct!(';')).expect(c).is_some() {
                 awaiting_semi = None;
                 continue;
             }
@@ -1182,12 +1179,12 @@ impl AstBody {
             }
 
             // Match let statement
-            if parse_keyword(c, AstKeyword::Let).is_some() {
+            if keyword(AstKeyword::Let).expect(c).is_some() {
                 // Match optional mut
-                let mutable = parse_keyword(c, AstKeyword::Mut).is_some();
+                let mutable = keyword(AstKeyword::Mut).expect(c).is_some();
 
                 // Match name
-                let Some(name) = parse_identifier(c, Symbol!("variable name")) else {
+                let Some(name) = identifier(Symbol!("variable name")).expect(c) else {
                     c.stuck_lookahead(|c| {
                         (0..5).any(|_| {
                             c.next()
@@ -1199,10 +1196,10 @@ impl AstBody {
                 };
 
                 // Match optional equality
-                let initializer = parse_punct(c, punct!('=')).map(|_| AstExpr::parse(c));
+                let initializer = punct(punct!('=')).expect(c).map(|_| AstExpr::parse(c));
 
                 // Match semicolon
-                if parse_punct(c, punct!(';')).is_none() {
+                if punct(punct!(';')).expect(c).is_none() {
                     c.hint_stuck(
                         c.next_span(),
                         "let statement expect a semicolon at their end",

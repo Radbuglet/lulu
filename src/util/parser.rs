@@ -128,6 +128,28 @@ impl<'cx, I> ParseSequence<'cx, I> {
         f(&mut self.cursor)
     }
 
+    pub fn expect_covert_hinted<R>(
+        &mut self,
+        visible: bool,
+        expectation: Symbol,
+        f: impl FnOnce(&mut I, &mut ParseHinter<'_>) -> R,
+    ) -> R
+    where
+        I: ParseCursor,
+        R: LookaheadResult,
+    {
+        let mut hinter = ParseHinter {
+            hints: Some(&mut self.stuck_hints),
+        };
+        let res = self.cursor.lookahead(|c| f(c, &mut hinter));
+        if res.is_truthy() {
+            self.moved_forward();
+        } else if visible {
+            self.expectations.push(expectation);
+        }
+        res
+    }
+
     pub fn expect_covert<R>(
         &mut self,
         visible: bool,
@@ -138,13 +160,7 @@ impl<'cx, I> ParseSequence<'cx, I> {
         I: ParseCursor,
         R: LookaheadResult,
     {
-        let res = self.cursor.lookahead(f);
-        if res.is_truthy() {
-            self.moved_forward();
-        } else if visible {
-            self.expectations.push(expectation);
-        }
-        res
+        self.expect_covert_hinted(visible, expectation, |c, _| f(c))
     }
 
     pub fn expect<R>(&mut self, expectation: Symbol, f: impl FnOnce(&mut I) -> R) -> R
@@ -152,7 +168,19 @@ impl<'cx, I> ParseSequence<'cx, I> {
         I: ParseCursor,
         R: LookaheadResult,
     {
-        self.expect_covert(true, expectation, f)
+        self.expect_covert(true, expectation, |c| f(c))
+    }
+
+    pub fn expect_hinted<R>(
+        &mut self,
+        expectation: Symbol,
+        f: impl FnOnce(&mut I, &mut ParseHinter<'_>) -> R,
+    ) -> R
+    where
+        I: ParseCursor,
+        R: LookaheadResult,
+    {
+        self.expect_covert_hinted(true, expectation, f)
     }
 
     pub fn hint_stuck_if_passes<R>(
@@ -280,50 +308,75 @@ impl<'cx, I> ParseSequence<'cx, I> {
     }
 }
 
-pub trait ParseOption<I>: Sized {
-    type Handler: Fn(&mut I) -> Self::Output;
+#[derive(Debug)]
+pub struct ParseHinter<'a> {
+    hints: Option<&'a mut Vec<(Span, String)>>,
+}
+
+impl ParseHinter<'_> {
+    pub fn new_empty() -> Self {
+        Self { hints: None }
+    }
+
+    pub fn hint(&mut self, span: Span, message: impl fmt::Display) {
+        if let Some(hints) = self.hints.as_deref_mut() {
+            hints.push((span, message.to_string()));
+        }
+    }
+}
+
+// === ParseOption === //
+
+pub trait OptionParser<I>: Sized {
+    type Handler: Fn(&mut I, &mut ParseHinter<'_>) -> Self::Output;
     type Output: LookaheadResult;
 
-    fn name(&self) -> Symbol;
+    fn expectation(&self) -> Symbol;
 
-    fn handler(&self) -> &Self::Handler;
+    fn matcher(&self) -> &Self::Handler;
+
+    fn match_(&self, c: &mut I) -> Self::Output
+    where
+        I: ForkableCursor,
+    {
+        c.lookahead(|c| self.matcher()(c, &mut ParseHinter::new_empty()))
+    }
 
     fn expect(&self, c: &mut ParseSequence<'_, I>) -> Self::Output
     where
         I: ParseCursor,
     {
-        c.expect(self.name(), self.handler())
+        c.expect_hinted(self.expectation(), self.matcher())
+    }
+
+    fn expect_covert(&self, visible: bool, c: &mut ParseSequence<'_, I>) -> Self::Output
+    where
+        I: ParseCursor,
+    {
+        c.expect_covert_hinted(visible, self.expectation(), self.matcher())
     }
 
     fn hint_if_match(&self, c: &mut ParseSequence<'_, I>, reason: impl fmt::Display)
     where
         I: ParseCursor,
     {
-        c.hint_stuck_if_passes(reason, self.handler())
+        c.hint_stuck_if_passes(reason, |c| self.matcher()(c, &mut ParseHinter::new_empty()))
     }
 }
 
-pub fn make_parse_option<C, O>(sym: Symbol, f: impl Fn(&mut C) -> O) -> impl ParseOption<C>
+impl<C, F, O> OptionParser<C> for (Symbol, F)
 where
-    C: ParseCursor,
-    O: LookaheadResult,
-{
-    (sym, f)
-}
-
-impl<C, F, O> ParseOption<C> for (Symbol, F)
-where
-    F: Fn(&mut C) -> O,
+    F: Fn(&mut C, &mut ParseHinter<'_>) -> O,
     O: LookaheadResult,
 {
     type Handler = F;
     type Output = O;
 
-    fn name(&self) -> Symbol {
+    fn expectation(&self) -> Symbol {
         self.0
     }
 
-    fn handler(&self) -> &Self::Handler {
+    fn matcher(&self) -> &Self::Handler {
         &self.1
     }
 }

@@ -6,7 +6,8 @@ use std::{fmt, rc::Rc};
 use crate::util::{
     diag::{Diagnostic, DiagnosticReporter},
     parser::{
-        ForkableCursor, LookBackParseCursor, ParseContext, ParseCursor, ParseOption, ParseSequence,
+        ForkableCursor, LookBackParseCursor, LookaheadResult, OptionParser, ParseContext,
+        ParseCursor, ParseHinter, ParseSequence,
     },
     span::{FileCursor, FileData, FileSequence, Span},
     symbol::Symbol,
@@ -1004,9 +1005,19 @@ fn parse_digits(c: &mut FileSequence, builder: &mut String, kind: DigitKind) {
 
 pub type TokenSequence<'a> = ParseSequence<'a, TokenCursor<'a>>;
 
-pub trait TokenParseOption<'a>: ParseOption<TokenCursor<'a>> {}
+pub trait TokenParser: for<'a> OptionParser<TokenCursor<'a>> {}
 
-impl<'a, O: ParseOption<TokenCursor<'a>>> TokenParseOption<'a> for O {}
+impl<O: for<'a> OptionParser<TokenCursor<'a>>> TokenParser for O {}
+
+pub fn make_token_parser<O>(
+    expectation: Symbol,
+    f: impl Fn(&mut TokenCursor<'_>, &mut ParseHinter) -> O,
+) -> impl TokenParser<Output = O>
+where
+    O: LookaheadResult,
+{
+    (expectation, f)
+}
 
 #[derive(Debug, Clone)]
 pub struct TokenCursor<'a> {
