@@ -335,11 +335,18 @@ pub trait OptionParser<I>: Sized {
 
     fn matcher(&self) -> &Self::Handler;
 
-    fn match_(&self, c: &mut I) -> Self::Output
+    fn consume(&self, c: &mut I) -> Self::Output
     where
         I: ForkableCursor,
     {
         c.lookahead(|c| self.matcher()(c, &mut ParseHinter::new_empty()))
+    }
+
+    fn did_consume(&self, c: &mut I) -> bool
+    where
+        I: ForkableCursor,
+    {
+        self.consume(c).is_truthy()
     }
 
     fn expect(&self, c: &mut ParseSequence<'_, I>) -> Self::Output
@@ -406,3 +413,12 @@ pub trait ParseCursor: ForkableCursor {
 pub trait LookBackParseCursor: ParseCursor {
     fn prev_span(&self) -> Span;
 }
+
+// === MaybePlaceholder === //
+
+pub type OptMaybePlaceholder<T> = Option<MaybePlaceholder<T>>;
+
+pub type MaybePlaceholder<T> = Result<T, CannotConstruct>;
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct CannotConstruct;

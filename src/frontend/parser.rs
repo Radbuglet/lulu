@@ -2,7 +2,10 @@ use crate::{
     frontend::ast::AstPathPart,
     util::{
         diag::DiagnosticReporter,
-        parser::{ForkableCursor, LookBackParseCursor, OptionParser, ParseContext, ParseCursor},
+        parser::{
+            CannotConstruct, ForkableCursor, LookBackParseCursor, OptMaybePlaceholder,
+            OptionParser, ParseContext, ParseCursor,
+        },
         span::Span,
         symbol::Symbol,
     },
@@ -229,7 +232,7 @@ fn parse_number_lit<'a>(c: &mut TokenSequence<'a>, name: Symbol) -> Option<&'a T
 impl AstPath {
     pub fn parse(c: &mut TokenSequence) -> Option<Self> {
         let _wp = c.while_parsing(Symbol!("path"));
-        let (expecting_part, me) = Self::parse_inner(c, true);
+        let (expecting_part, me) = Self::parse_base(c, true);
         if expecting_part {
             c.stuck(|_| ());
         }
@@ -237,7 +240,7 @@ impl AstPath {
         (!me.is_empty()).then_some(me)
     }
 
-    fn parse_inner(c: &mut TokenSequence, is_root: bool) -> (bool, Self) {
+    fn parse_base(c: &mut TokenSequence, is_root: bool) -> (bool, Self) {
         #[derive(Debug, Copy, Clone, Eq, PartialEq)]
         enum Phase {
             WaitingForTurbo,
@@ -246,10 +249,14 @@ impl AstPath {
 
         // Match prefix
         let (prefix, mut phase, mut expecting_something) = 'parse_prefix: {
+            let crate_prefix = keyword(AstKeyword::Crate);
+            let turbo_prefix = turbo();
+            let self_prefix = keyword(AstKeyword::Self_);
+
             // If root prefixes are permitted here...
             if is_root {
                 // Match the `crate` prefix
-                if let Some(ident) = keyword(AstKeyword::Crate).expect(c) {
+                if let Some(ident) = crate_prefix.expect(c) {
                     break 'parse_prefix (
                         AstPathPrefix::Crate(ident.span),
                         Phase::WaitingForTurbo,
@@ -258,12 +265,12 @@ impl AstPath {
                 }
 
                 // Match the `::` prefix
-                if let Some(span) = turbo().expect(c) {
+                if let Some(span) = turbo_prefix.expect(c) {
                     break 'parse_prefix (AstPathPrefix::Crates(span), Phase::WaitingForPart, true);
                 }
 
                 // Match the `self` prefix
-                if let Some(ident) = keyword(AstKeyword::Self_).expect(c) {
+                if let Some(ident) = self_prefix.expect(c) {
                     break 'parse_prefix (
                         AstPathPrefix::Self_(ident.span),
                         Phase::WaitingForTurbo,
@@ -273,7 +280,11 @@ impl AstPath {
             } else {
                 // Otherwise, push warnings if the user attempted to use these in an inappropriate
                 // context.
-                // TODO
+                c.hint_stuck_if_passes("path prefix cannot be used in this context", |c| {
+                    crate_prefix.did_consume(c)
+                        || turbo_prefix.did_consume(c)
+                        || self_prefix.did_consume(c)
+                });
             }
 
             // Treat as implicit prefix
@@ -319,57 +330,73 @@ impl AstPath {
 }
 
 impl AstMultiPath {
-    pub fn parse(c: &mut TokenSequence) -> Self {
-        Self::parse_inner(c, true)
+    pub fn parse(c: &mut TokenSequence) -> Option<Self> {
+        Self::parse_rec(c, true)
     }
 
-    fn parse_inner(c: &mut TokenSequence, is_root: bool) -> Self {
+    fn parse_rec(c: &mut TokenSequence, is_root: bool) -> Option<Self> {
         // Match path base
-        let (expecting_part, base) = AstPath::parse_inner(c, is_root);
+        let (expecting_part, base) = AstPath::parse_base(c, is_root);
 
         // Match tree part
-        let imports = if expecting_part || base.is_empty() {
-            let start_span = c.next_span();
+        let mut is_empty = false;
 
-            if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
-                let _wp = c.context().while_parsing(start_span, Symbol!("path tree"));
-                let mut parts = Vec::new();
-                let mut c = c.enter(group.cursor());
+        let tree = 'tree: {
+            // If a turbo is trailing the path or the path hasn't started yet, we can parse a tree.
+            if expecting_part || base.is_empty() {
+                let start_span = c.next_span();
 
-                // Match path
-                loop {
-                    // Match separating comma
-                    if !parts.is_empty() && punct(punct!(',')).expect(&mut c).is_none() {
-                        break;
-                    }
+                // Match regular tree
+                if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
+                    let _wp = c.context().while_parsing(start_span, Symbol!("path tree"));
+                    let mut parts = Vec::new();
+                    let mut c = c.enter(group.cursor());
 
                     // Match path
-                    let path = AstMultiPath::parse_inner(&mut c, false);
-                    if path.is_empty() {
-                        break;
+                    loop {
+                        // Match separating comma
+                        if !parts.is_empty() && punct(punct!(',')).expect(&mut c).is_none() {
+                            break;
+                        }
+
+                        // Hint on invalid wildcard
+                        punct(punct!('*')).hint_if_match(
+                            &mut c,
+                            "wildcard cannot be listed in a list of other module items",
+                        );
+
+                        // Match path
+                        let Some(path) = AstMultiPath::parse_rec(&mut c, false) else {
+                            break;
+                        };
+                        parts.push(path);
                     }
-                    parts.push(path);
+
+                    // Match EOS
+                    if !c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
+                        c.stuck(|_| ());
+                    }
+
+                    break 'tree AstMultiPathList::List(Box::from_iter(parts));
                 }
 
-                // Match EOS
-                if !c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
-                    c.stuck(|_| ());
+                // Match wildcard
+                if punct(punct!('*')).expect(c).is_some() {
+                    break 'tree AstMultiPathList::Wildcard;
                 }
 
-                AstMultiPathList::List(Box::from_iter(parts))
-            } else if punct(punct!('*')).expect(c).is_some() {
-                AstMultiPathList::Wildcard
-            } else {
+                // If we expected something after the turbo, we're stuck
                 if !base.is_empty() {
                     c.stuck(|_| ());
                 }
-                AstMultiPathList::List(Box::from_iter([]))
             }
-        } else {
+
+            // Otherwise, this is a simple path.
+            is_empty = true;
             AstMultiPathList::List(Box::from_iter([]))
         };
 
-        Self { base, imports }
+        (!base.is_empty() || !is_empty).then_some(Self { base, tree })
     }
 }
 
@@ -506,7 +533,7 @@ impl AstFileRoot {
 }
 
 impl AstFunctionItem {
-    pub fn parse(c: &mut TokenSequence) -> Option<Result<Self, ()>> {
+    pub fn parse(c: &mut TokenSequence) -> OptMaybePlaceholder<Self> {
         let start = c.next_span();
 
         // Match `fn` keyword
@@ -514,14 +541,12 @@ impl AstFunctionItem {
 
         // Match function name
         let Some(name) = identifier(Symbol!("function name")).expect(c) else {
-            c.stuck(|_| ());
-            return Some(Err(()));
+            return Some(Err(CannotConstruct));
         };
 
         // Match argument list
         let Some(args_group) = del_group(GroupDelimiter::Paren).expect(c) else {
-            c.stuck(|_| ());
-            return Some(Err(()));
+            return Some(Err(CannotConstruct));
         };
 
         let args = {
@@ -563,12 +588,7 @@ impl AstFunctionItem {
 
         // Match result hint
         let result = if thin_arrow().expect(c).is_some() {
-            let Some(ty) = AstType::parse(c) else {
-                c.stuck(|_| ());
-                return Some(Err(()));
-            };
-
-            ty
+            AstType::parse(c).unwrap_or_else(AstType::new_unit)
         } else {
             AstType::new_unit()
         };
@@ -589,7 +609,7 @@ impl AstFunctionItem {
             .into()
         } else {
             c.stuck(|_| ());
-            return Some(Err(()));
+            return Some(Err(CannotConstruct));
         };
 
         Some(Ok(Self {
@@ -810,11 +830,11 @@ impl AstExpr {
 
     fn match_bin_op(c: &mut TokenCursor) -> Option<AstBinOpKind> {
         // Parse multi-puncts
-        if short_and().match_(c).is_some() {
+        if short_and().consume(c).is_some() {
             return Some(AstBinOpKind::ShortAnd);
         }
 
-        if short_or().match_(c).is_some() {
+        if short_or().consume(c).is_some() {
             return Some(AstBinOpKind::ShortOr);
         }
 
@@ -1137,7 +1157,6 @@ impl AstExpr {
             return AstLiteralExpr::Bool(ident.span, false).into();
         }
 
-        c.stuck(|_| ());
         AstExpr::Empty
     }
 }

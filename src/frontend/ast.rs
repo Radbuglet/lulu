@@ -69,13 +69,7 @@ pub struct AstMultiPath {
     pub base: AstPath,
 
     /// The parts to be imported. The prefix of each base path should be `self::`.
-    pub imports: AstMultiPathList,
-}
-
-impl AstMultiPath {
-    pub fn is_empty(&self) -> bool {
-        self.base.is_empty() && matches!(&self.imports, AstMultiPathList::List(l) if l.is_empty())
-    }
+    pub tree: AstMultiPathList,
 }
 
 #[derive(Debug, Clone)]
