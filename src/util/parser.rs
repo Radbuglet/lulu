@@ -280,6 +280,54 @@ impl<'cx, I> ParseSequence<'cx, I> {
     }
 }
 
+pub trait ParseOption<I>: Sized {
+    type Handler: Fn(&mut I) -> Self::Output;
+    type Output: LookaheadResult;
+
+    fn name(&self) -> Symbol;
+
+    fn handler(&self) -> &Self::Handler;
+
+    fn expect(&self, c: &mut ParseSequence<'_, I>) -> Self::Output
+    where
+        I: ParseCursor,
+    {
+        c.expect(self.name(), self.handler())
+    }
+
+    fn hint_if_match(&self, c: &mut ParseSequence<'_, I>, reason: impl fmt::Display)
+    where
+        I: ParseCursor,
+    {
+        c.hint_stuck_if_passes(reason, self.handler())
+    }
+}
+
+pub fn make_parse_option<C, O>(sym: Symbol, f: impl Fn(&mut C) -> O) -> impl ParseOption<C>
+where
+    C: ParseCursor,
+    O: LookaheadResult,
+{
+    (sym, f)
+}
+
+impl<C, F, O> ParseOption<C> for (Symbol, F)
+where
+    F: Fn(&mut C) -> O,
+    O: LookaheadResult,
+{
+    type Handler = F;
+    type Output = O;
+
+    fn name(&self) -> Symbol {
+        self.0
+    }
+
+    fn handler(&self) -> &Self::Handler {
+        &self.1
+    }
+}
+
 // === ParseCursor === //
 
 pub trait ForkableCursor: Iterator + Clone {
