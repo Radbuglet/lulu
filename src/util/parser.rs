@@ -264,6 +264,13 @@ impl<'cx, I> ParseSequence<'cx, I> {
         self.cursor.next_span()
     }
 
+    pub fn prev_span(&self) -> Span
+    where
+        I: LookBackParseCursor,
+    {
+        self.cursor.prev_span()
+    }
+
     pub fn context(&self) -> &'cx ParseContext {
         self.cx
     }
@@ -293,4 +300,8 @@ pub trait ForkableCursor: Iterator + Clone {
 
 pub trait ParseCursor: ForkableCursor {
     fn next_span(&self) -> Span;
+}
+
+pub trait LookBackParseCursor: ParseCursor {
+    fn prev_span(&self) -> Span;
 }

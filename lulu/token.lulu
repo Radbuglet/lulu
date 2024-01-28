@@ -1,3 +1,4 @@
+/*
 namespace util::rpc;
 
 class RpcManager {
@@ -20,4 +21,11 @@ impl RpcManager {
 	pub fn send_rpc(self, msg: Array<u8>) {
 
 	}
+}
+*/
+
+fn main() {
+	%
+
+	this is tuff
 }

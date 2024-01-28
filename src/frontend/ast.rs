@@ -1,6 +1,6 @@
 use aunty::StrongObj;
 
-use crate::util::{span::Span, symbol::Symbol};
+use crate::util::span::Span;
 
 use super::{
     parser::AstKeyword,
@@ -42,7 +42,7 @@ macro_rules! define_convertible_enum {
 
 #[derive(Debug)]
 pub struct AstFileRoot {
-    pub items: Vec<AstItem>,
+    pub items: Box<[AstItem]>,
 }
 
 define_convertible_enum! {
@@ -54,8 +54,9 @@ define_convertible_enum! {
 
 #[derive(Debug)]
 pub struct AstFunctionItem {
+    pub span: Span,
     pub name: TokenIdent,
-    pub args: Vec<(TokenIdent, AstType)>,
+    pub args: Box<[(TokenIdent, AstType)]>,
     pub result: AstType,
     pub body: AstExpr,
 }
@@ -95,29 +96,29 @@ pub struct AstPath {
 impl AstPath {
     pub fn new_local(name: TokenIdent) -> Self {
         Self {
-            prefix: AstPathPrefix::Self_,
+            prefix: AstPathPrefix::Implicit,
             parts: Box::from_iter([AstPathPart(name)]),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.prefix == AstPathPrefix::Implicit && self.parts.is_empty()
+        matches!(self.prefix, AstPathPrefix::Implicit) && self.parts.is_empty()
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone)]
 pub enum AstPathPrefix {
     /// Relative to the root of the currently compiled crate.
-    Crate,
+    Crate(Span),
 
     /// A fully qualified crate name.
-    Crates,
+    Crates(Span),
 
     /// Implicitly relative to the current module.
     Implicit,
 
     /// Relative to the current module.
-    Self_,
+    Self_(Span),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -158,7 +159,8 @@ impl AstType {
 define_convertible_enum! {
     #[derive(Debug, Clone)]
     pub enum AstExpr {
-        Placeholder,
+        Empty,
+        Malformed,
         Path(AstPathExpr),
         Dot(AstDotExpr),
         Call(AstCallExpr),
@@ -176,6 +178,12 @@ define_convertible_enum! {
     }
 }
 
+impl AstExpr {
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+}
+
 #[derive(Debug)]
 pub struct AstPathExpr {
     pub path: AstPath,
@@ -184,7 +192,7 @@ pub struct AstPathExpr {
 #[derive(Debug)]
 pub struct AstDotExpr {
     pub expr: AstExpr,
-    pub member: Symbol,
+    pub member: TokenIdent,
 }
 
 #[derive(Debug)]

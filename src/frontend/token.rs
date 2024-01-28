@@ -5,7 +5,7 @@ use std::{fmt, rc::Rc};
 
 use crate::util::{
     diag::{Diagnostic, DiagnosticReporter},
-    parser::{ForkableCursor, ParseContext, ParseCursor, ParseSequence},
+    parser::{ForkableCursor, LookBackParseCursor, ParseContext, ParseCursor, ParseSequence},
     span::{FileCursor, FileData, FileSequence, Span},
     symbol::Symbol,
 };
@@ -129,6 +129,7 @@ impl TokenGroup {
 
     pub fn cursor(&self) -> TokenCursor<'_> {
         TokenCursor {
+            prev_span: self.open,
             close_span: self.close,
             iter: self.tokens.iter(),
         }
@@ -1003,6 +1004,7 @@ pub type TokenSequence<'a> = ParseSequence<'a, TokenCursor<'a>>;
 
 #[derive(Debug, Clone)]
 pub struct TokenCursor<'a> {
+    pub prev_span: Span,
     pub close_span: Span,
     pub iter: std::slice::Iter<'a, Token>,
 }
@@ -1011,7 +1013,9 @@ impl<'a> Iterator for TokenCursor<'a> {
     type Item = &'a Token;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        let token = self.iter.next()?;
+        self.prev_span = token.span();
+        Some(token)
     }
 }
 impl ForkableCursor for TokenCursor<'_> {}
@@ -1019,5 +1023,11 @@ impl ForkableCursor for TokenCursor<'_> {}
 impl ParseCursor for TokenCursor<'_> {
     fn next_span(&self) -> Span {
         self.peek().map_or(self.close_span, |token| token.span())
+    }
+}
+
+impl LookBackParseCursor for TokenCursor<'_> {
+    fn prev_span(&self) -> Span {
+        self.prev_span
     }
 }

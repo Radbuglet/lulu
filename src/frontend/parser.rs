@@ -34,13 +34,7 @@ pub fn parse_file(diag: Obj<DiagnosticReporter>, tokens: &TokenGroup) -> AstFile
     let cx = ParseContext::new(diag);
     let mut c = cx.enter(tokens.cursor());
 
-    let expr = AstFileRoot::parse(&mut c);
-
-    if !c.expect(Symbol!("end of file"), |c| c.next().is_none()) {
-        c.stuck(|_| ());
-    }
-
-    expr
+    AstFileRoot::parse(&mut c)
 }
 
 // === Keywords === //
@@ -236,14 +230,14 @@ fn parse_number_lit<'a>(c: &mut TokenSequence<'a>, name: Symbol) -> Option<&'a T
 // === Paths === //
 
 impl AstPath {
-    pub fn parse(c: &mut TokenSequence) -> Self {
+    pub fn parse(c: &mut TokenSequence) -> Option<Self> {
         let _wp = c.while_parsing(Symbol!("path"));
         let (expecting_part, me) = Self::parse_inner(c, true);
         if expecting_part {
             c.stuck(|_| ());
         }
 
-        me
+        (!me.is_empty()).then_some(me)
     }
 
     fn parse_inner(c: &mut TokenSequence, is_root: bool) -> (bool, Self) {
@@ -254,16 +248,40 @@ impl AstPath {
         }
 
         // Match prefix
-        let (prefix, mut phase, mut expecting_something) =
-            if is_root && parse_keyword(c, AstKeyword::Crate).is_some() {
-                (AstPathPrefix::Crate, Phase::WaitingForTurbo, false)
-            } else if is_root && parse_turbo(c).is_some() {
-                (AstPathPrefix::Crates, Phase::WaitingForPart, true)
-            } else if is_root && parse_keyword(c, AstKeyword::Self_).is_some() {
-                (AstPathPrefix::Self_, Phase::WaitingForTurbo, false)
+        let (prefix, mut phase, mut expecting_something) = 'parse_prefix: {
+            // If root prefixes are permitted here...
+            if is_root {
+                // Match the `crate` prefix
+                if let Some(ident) = parse_keyword(c, AstKeyword::Crate) {
+                    break 'parse_prefix (
+                        AstPathPrefix::Crate(ident.span),
+                        Phase::WaitingForTurbo,
+                        false,
+                    );
+                }
+
+                // Match the `::` prefix
+                if let Some(span) = parse_turbo(c) {
+                    break 'parse_prefix (AstPathPrefix::Crates(span), Phase::WaitingForPart, true);
+                }
+
+                // Match the `self` prefix
+                if let Some(ident) = parse_keyword(c, AstKeyword::Self_) {
+                    break 'parse_prefix (
+                        AstPathPrefix::Self_(ident.span),
+                        Phase::WaitingForTurbo,
+                        false,
+                    );
+                }
             } else {
-                (AstPathPrefix::Implicit, Phase::WaitingForPart, false)
-            };
+                // Otherwise, push warnings if the user attempted to use these in an inappropriate
+                // context.
+                // TODO
+            }
+
+            // Treat as implicit prefix
+            (AstPathPrefix::Implicit, Phase::WaitingForPart, false)
+        };
 
         // Match parts
         let mut parts = Vec::new();
@@ -385,9 +403,8 @@ impl AstType {
     fn parse_base(c: &mut TokenSequence) -> Option<Self> {
         let start = c.next_span();
 
-        // Match path
-        let path = AstPath::parse(c);
-        if !path.is_empty() {
+        // Match ADT
+        if let Some(path) = AstPath::parse(c) {
             // Match optional generics
             let mut parts = Vec::new();
 
@@ -485,12 +502,16 @@ impl AstFileRoot {
             });
         }
 
-        Self { items }
+        Self {
+            items: Box::from_iter(items),
+        }
     }
 }
 
 impl AstFunctionItem {
     pub fn parse(c: &mut TokenSequence) -> Option<Result<Self, ()>> {
+        let start = c.next_span();
+
         // Match `fn` keyword
         let _kw = parse_keyword(c, AstKeyword::Fn)?;
 
@@ -575,8 +596,9 @@ impl AstFunctionItem {
         };
 
         Some(Ok(Self {
+            span: start.to(c.prev_span()),
             name,
-            args,
+            args: Box::from_iter(args),
             result,
             body,
         }))
@@ -770,6 +792,10 @@ impl AstExpr {
     fn parse_inner(c: &mut TokenSequence, min_bp: u32) -> Self {
         let mut expr = Self::parse_atom(c);
 
+        if expr.is_empty() {
+            return expr;
+        }
+
         loop {
             let Some(kind) = c.expect(Symbol!("binary operator"), |c| {
                 Self::match_bin_op(c).filter(|&op| Self::bin_binding_power(op).0 >= min_bp)
@@ -849,11 +875,7 @@ impl AstExpr {
                     continue;
                 };
 
-                expr = AstDotExpr {
-                    expr,
-                    member: member.text,
-                }
-                .into();
+                expr = AstDotExpr { expr, member }.into();
                 continue;
             }
 
@@ -960,49 +982,46 @@ impl AstExpr {
         }
 
         // Match path
-        {
-            let path = AstPath::parse(c);
-            if !path.is_empty() {
-                // Match structure creation
-                if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
-                    let mut c = c.enter(group.cursor());
+        if let Some(path) = AstPath::parse(c) {
+            // Match structure creation
+            if let Some(group) = parse_group(c, GroupDelimiter::Brace) {
+                let mut c = c.enter(group.cursor());
 
-                    let mut fields = Vec::new();
+                let mut fields = Vec::new();
 
-                    loop {
-                        // Match field name
-                        let Some(field) = parse_identifier(&mut c, Symbol!("field name")) else {
-                            break;
-                        };
+                loop {
+                    // Match field name
+                    let Some(field) = parse_identifier(&mut c, Symbol!("field name")) else {
+                        break;
+                    };
 
-                        // Try to match explicit value
-                        let value = if parse_punct(&mut c, punct!(':')).is_some() {
-                            AstExpr::parse(&mut c)
-                        } else {
-                            AstPathExpr {
-                                path: AstPath::new_local(field),
-                            }
-                            .into()
-                        };
-
-                        fields.push((field, value));
-
-                        // Match comma
-                        if parse_punct(&mut c, punct!(',')).is_none() {
-                            break;
+                    // Try to match explicit value
+                    let value = if parse_punct(&mut c, punct!(':')).is_some() {
+                        AstExpr::parse(&mut c)
+                    } else {
+                        AstPathExpr {
+                            path: AstPath::new_local(field),
                         }
-                    }
+                        .into()
+                    };
 
-                    // Match EOS
-                    if !c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
-                        c.stuck(|_| ());
-                    }
+                    fields.push((field, value));
 
-                    return AstCtorExpr { item: path, fields }.into();
+                    // Match comma
+                    if parse_punct(&mut c, punct!(',')).is_none() {
+                        break;
+                    }
                 }
 
-                return AstPathExpr { path }.into();
+                // Match EOS
+                if !c.expect(Symbol!("`}`"), |c| c.next().is_none()) {
+                    c.stuck(|_| ());
+                }
+
+                return AstCtorExpr { item: path, fields }.into();
             }
+
+            return AstPathExpr { path }.into();
         }
 
         // Match block expressions
@@ -1015,15 +1034,18 @@ impl AstExpr {
             .into();
         }
 
-        // Match if, while, and loop expressions
+        // Match `if` expressions
         if parse_keyword(c, AstKeyword::If).is_some() {
+            // Match the looping condition expression
             let condition = AstExpr::parse(c);
 
+            // Match the main loop brace
             let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
                 c.stuck(|_| ());
-                return AstExpr::Placeholder;
+                return AstExpr::Malformed;
             };
 
+            // Match the subsequent `else` chain.
             let main_expr = StrongObj::new(AstIfExpr {
                 condition,
                 body: AstBody::parse(&mut c.enter(group.cursor())),
@@ -1033,11 +1055,12 @@ impl AstExpr {
             let mut curr_expr = main_expr.clone();
 
             while parse_keyword(c, AstKeyword::Else).is_some() {
+                // Match an `else if`.
                 if parse_keyword(c, AstKeyword::If).is_some() {
                     let condition = AstExpr::parse(c);
 
                     let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
-                        return AstExpr::Placeholder;
+                        return AstExpr::Malformed;
                     };
 
                     let new_expr = StrongObj::new(AstIfExpr {
@@ -1048,9 +1071,10 @@ impl AstExpr {
                     curr_expr.get_mut().otherwise = Some(new_expr.clone().into());
                     curr_expr = new_expr;
                 } else {
+                    // Otherwise, we're matching a regular `else`.
                     let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
                         c.stuck(|_| ());
-                        return AstExpr::Placeholder;
+                        return AstExpr::Malformed;
                     };
 
                     curr_expr.get_mut().otherwise = Some(
@@ -1066,12 +1090,13 @@ impl AstExpr {
             return main_expr.into();
         }
 
+        // Match a `while` loop
         if parse_keyword(c, AstKeyword::While).is_some() {
             let condition = AstExpr::parse(c);
 
             let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
                 c.stuck(|_| ());
-                return AstExpr::Placeholder;
+                return AstExpr::Malformed;
             };
 
             return AstWhileExpr {
@@ -1081,10 +1106,11 @@ impl AstExpr {
             .into();
         }
 
+        // Match a `loop` loop
         if parse_keyword(c, AstKeyword::Loop).is_some() {
             let Some(group) = parse_group(c, GroupDelimiter::Brace) else {
                 c.stuck(|_| ());
-                return AstExpr::Placeholder;
+                return AstExpr::Malformed;
             };
 
             return AstLoopExpr {
@@ -1115,7 +1141,7 @@ impl AstExpr {
         }
 
         c.stuck(|_| ());
-        AstExpr::Placeholder
+        AstExpr::Empty
     }
 }
 
@@ -1198,6 +1224,9 @@ impl AstBody {
 
             // Match expression
             let expr = AstExpr::parse(c);
+            if expr.is_empty() {
+                break;
+            }
             awaiting_semi = Some(expr.needs_semi());
             statements.push(AstStatement::Expr(expr));
         }
