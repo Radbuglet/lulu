@@ -63,20 +63,7 @@ pub struct AstFunctionItem {
 
 // === Paths === //
 
-#[derive(Debug, Clone)]
-pub struct AstMultiPath {
-    /// The base path of the multi-import.
-    pub base: AstPath,
-
-    /// The parts to be imported. The prefix of each base path should be `self::`.
-    pub tree: AstMultiPathList,
-}
-
-#[derive(Debug, Clone)]
-pub enum AstMultiPathList {
-    List(Box<[AstMultiPath]>),
-    Wildcard,
-}
+// Base paths
 
 #[derive(Debug, Clone)]
 pub struct AstPath {
@@ -85,19 +72,6 @@ pub struct AstPath {
 
     /// The full path.
     pub parts: Box<[AstPathPart]>,
-}
-
-impl AstPath {
-    pub fn new_local(name: TokenIdent) -> Self {
-        Self {
-            prefix: AstPathPrefix::Implicit,
-            parts: Box::from_iter([AstPathPart(name)]),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        matches!(self.prefix, AstPathPrefix::Implicit) && self.parts.is_empty()
-    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -121,6 +95,44 @@ pub struct AstPathPart(pub TokenIdent);
 impl AstPathPart {
     pub fn is_super(&self) -> bool {
         self.0.text == AstKeyword::Super.to_sym()
+    }
+}
+
+// Multi Paths
+#[derive(Debug, Clone)]
+pub struct AstMultiPath {
+    /// The base path of the multi-import.
+    pub base: AstPath,
+
+    /// The parts to be imported. The prefix of each base path should be `self::`.
+    pub tree: AstMultiPathList,
+}
+
+#[derive(Debug, Clone)]
+pub enum AstMultiPathList {
+    List(Box<[AstMultiPath]>),
+    Wildcard,
+}
+
+// Generic Paths
+#[derive(Debug)]
+pub struct AstGenericPath {
+    pub prefix: AstPathPrefix,
+    pub parts: Box<[AstGenericPathPart]>,
+}
+
+#[derive(Debug)]
+pub enum AstGenericPathPart {
+    Named(AstPathPart),
+    Generic(Box<[AstType]>),
+}
+
+impl AstGenericPath {
+    pub fn new_local(name: TokenIdent) -> Self {
+        Self {
+            prefix: AstPathPrefix::Implicit,
+            parts: Box::from_iter([AstGenericPathPart::Named(AstPathPart(name))]),
+        }
     }
 }
 
@@ -180,7 +192,7 @@ impl AstExpr {
 
 #[derive(Debug)]
 pub struct AstPathExpr {
-    pub path: AstPath,
+    pub path: AstGenericPath,
 }
 
 #[derive(Debug)]
@@ -247,7 +259,7 @@ pub struct AstParenExpr {
 
 #[derive(Debug)]
 pub struct AstCtorExpr {
-    pub item: AstPath,
+    pub item: AstGenericPath,
     pub fields: Vec<(TokenIdent, AstExpr)>,
 }
 

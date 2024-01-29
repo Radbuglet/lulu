@@ -20,10 +20,10 @@ use smallvec::SmallVec;
 use super::{
     ast::{
         AstBinOpExpr, AstBinOpKind, AstBlockExpr, AstBody, AstCallExpr, AstCtorExpr, AstDotExpr,
-        AstExpr, AstFileRoot, AstFunctionItem, AstIfExpr, AstIndexExpr, AstLetStatement,
-        AstLiteralExpr, AstLoopExpr, AstMultiPath, AstMultiPathList, AstParenExpr, AstPath,
-        AstPathExpr, AstPathPrefix, AstStatement, AstTupleExpr, AstType, AstTypeKind,
-        AstUnaryNegExpr, AstWhileExpr,
+        AstExpr, AstFileRoot, AstFunctionItem, AstGenericPath, AstGenericPathPart, AstIfExpr,
+        AstIndexExpr, AstLetStatement, AstLiteralExpr, AstLoopExpr, AstMultiPath, AstMultiPathList,
+        AstParenExpr, AstPath, AstPathExpr, AstPathPrefix, AstStatement, AstTupleExpr, AstType,
+        AstTypeKind, AstUnaryNegExpr, AstWhileExpr,
     },
     token::{
         make_token_parser, punct, GroupDelimiter, PunctChar, Token, TokenCharLit, TokenCursor,
@@ -229,102 +229,109 @@ fn parse_number_lit<'a>(c: &mut TokenSequence<'a>, name: Symbol) -> Option<&'a T
 
 // === Paths === //
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum PathTail {
+    Empty,
+    Turbo,
+    Name,
+}
+
+fn parse_path_prefix(c: &mut TokenSequence, is_allowed: bool) -> (AstPathPrefix, PathTail) {
+    let crate_prefix = keyword(AstKeyword::Crate);
+    let turbo_prefix = turbo();
+    let self_prefix = keyword(AstKeyword::Self_);
+
+    // If root prefixes are permitted here...
+    if is_allowed {
+        // Match the `crate` prefix
+        if let Some(ident) = crate_prefix.expect(c) {
+            return (AstPathPrefix::Crate(ident.span), PathTail::Name);
+        }
+
+        // Match the `::` prefix
+        if let Some(span) = turbo_prefix.expect(c) {
+            return (AstPathPrefix::Crates(span), PathTail::Turbo);
+        }
+
+        // Match the `self` prefix
+        if let Some(ident) = self_prefix.expect(c) {
+            return (AstPathPrefix::Self_(ident.span), PathTail::Name);
+        }
+    } else {
+        // Otherwise, push warnings if the user attempted to use these in an inappropriate
+        // context.
+        c.hint_stuck_if_passes("path prefix cannot be used in this context", |c| {
+            crate_prefix.did_consume(c) || turbo_prefix.did_consume(c) || self_prefix.did_consume(c)
+        });
+    }
+
+    // Treat as implicit prefix
+    (AstPathPrefix::Implicit, PathTail::Empty)
+}
+
+fn parse_path_fragment(c: &mut TokenSequence, allow_super: bool) -> Option<AstPathPart> {
+    identifier(Symbol!("path part"))
+        .expect(c)
+        .or_else(|| {
+            let match_super = keyword(AstKeyword::Super);
+
+            if allow_super {
+                match_super.expect(c)
+            } else {
+                match_super.hint_if_match(c, "`super` is not allowed in this context");
+                None
+            }
+        })
+        .map(AstPathPart)
+}
+
 impl AstPath {
     pub fn parse(c: &mut TokenSequence) -> Option<Self> {
         let _wp = c.while_parsing(Symbol!("path"));
-        let (expecting_part, me) = Self::parse_base(c, true);
-        if expecting_part {
-            c.stuck(|_| ());
-        }
+        let (me, path_tail) = Self::parse_base(c, true);
 
-        (!me.is_empty()).then_some(me)
+        match path_tail {
+            PathTail::Empty => None,
+            PathTail::Turbo => {
+                c.stuck(|_| ());
+                Some(me)
+            }
+            PathTail::Name => Some(me),
+        }
     }
 
-    fn parse_base(c: &mut TokenSequence, is_root: bool) -> (bool, Self) {
-        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-        enum Phase {
-            WaitingForTurbo,
-            WaitingForPart,
-        }
-
+    fn parse_base(c: &mut TokenSequence, is_root: bool) -> (Self, PathTail) {
         // Match prefix
-        let (prefix, mut phase, mut expecting_something) = 'parse_prefix: {
-            let crate_prefix = keyword(AstKeyword::Crate);
-            let turbo_prefix = turbo();
-            let self_prefix = keyword(AstKeyword::Self_);
-
-            // If root prefixes are permitted here...
-            if is_root {
-                // Match the `crate` prefix
-                if let Some(ident) = crate_prefix.expect(c) {
-                    break 'parse_prefix (
-                        AstPathPrefix::Crate(ident.span),
-                        Phase::WaitingForTurbo,
-                        false,
-                    );
-                }
-
-                // Match the `::` prefix
-                if let Some(span) = turbo_prefix.expect(c) {
-                    break 'parse_prefix (AstPathPrefix::Crates(span), Phase::WaitingForPart, true);
-                }
-
-                // Match the `self` prefix
-                if let Some(ident) = self_prefix.expect(c) {
-                    break 'parse_prefix (
-                        AstPathPrefix::Self_(ident.span),
-                        Phase::WaitingForTurbo,
-                        false,
-                    );
-                }
-            } else {
-                // Otherwise, push warnings if the user attempted to use these in an inappropriate
-                // context.
-                c.hint_stuck_if_passes("path prefix cannot be used in this context", |c| {
-                    crate_prefix.did_consume(c)
-                        || turbo_prefix.did_consume(c)
-                        || self_prefix.did_consume(c)
-                });
-            }
-
-            // Treat as implicit prefix
-            (AstPathPrefix::Implicit, Phase::WaitingForPart, false)
-        };
+        let (prefix, mut tail) = parse_path_prefix(c, is_root);
 
         // Match parts
         let mut parts = Vec::new();
         loop {
-            match phase {
-                Phase::WaitingForTurbo => {
-                    if turbo().expect(c).is_some() {
-                        phase = Phase::WaitingForPart;
-                        expecting_something = true;
-                        continue;
+            match tail {
+                PathTail::Empty | PathTail::Turbo => {
+                    if let Some(part) = parse_path_fragment(c, is_root) {
+                        parts.push(part);
+                        tail = PathTail::Name;
+                    } else {
+                        break;
                     }
                 }
-                Phase::WaitingForPart => {
-                    if let Some(part) = identifier(Symbol!("path part")).expect(c).or_else(|| {
-                        is_root
-                            .then(|| keyword(AstKeyword::Super).expect(c))
-                            .flatten()
-                    }) {
-                        parts.push(AstPathPart(part));
-                        phase = Phase::WaitingForTurbo;
-                        expecting_something = false;
-                        continue;
+                PathTail::Name => {
+                    if turbo().expect(c).is_some() {
+                        tail = PathTail::Turbo;
+                    } else {
+                        break;
                     }
                 }
             }
-
-            break;
         }
 
         (
-            expecting_something,
             Self {
                 prefix,
                 parts: Box::from_iter(parts),
             },
+            tail,
         )
     }
 }
@@ -336,14 +343,14 @@ impl AstMultiPath {
 
     fn parse_rec(c: &mut TokenSequence, is_root: bool) -> Option<Self> {
         // Match path base
-        let (expecting_part, base) = AstPath::parse_base(c, is_root);
+        let (base, base_tail) = AstPath::parse_base(c, is_root);
 
         // Match tree part
         let mut is_empty = false;
 
         let tree = 'tree: {
             // If a turbo is trailing the path or the path hasn't started yet, we can parse a tree.
-            if expecting_part || base.is_empty() {
+            if matches!(base_tail, PathTail::Empty | PathTail::Turbo) {
                 let start_span = c.next_span();
 
                 // Match regular tree
@@ -386,7 +393,7 @@ impl AstMultiPath {
                 }
 
                 // If we expected something after the turbo, we're stuck
-                if !base.is_empty() {
+                if base_tail == PathTail::Turbo {
                     c.stuck(|_| ());
                 }
             }
@@ -396,7 +403,76 @@ impl AstMultiPath {
             AstMultiPathList::List(Box::from_iter([]))
         };
 
-        (!base.is_empty() || !is_empty).then_some(Self { base, tree })
+        (base_tail != PathTail::Empty || !is_empty).then_some(Self { base, tree })
+    }
+}
+
+impl AstGenericPath {
+    pub fn parse(c: &mut TokenSequence) -> Option<Self> {
+        // Match prefix
+        let (prefix, mut tail) = parse_path_prefix(c, true);
+
+        // Match parts
+        let mut parts = Vec::new();
+        loop {
+            match tail {
+                PathTail::Empty | PathTail::Turbo => {
+                    // Match path fragment
+                    if let Some(part) = parse_path_fragment(c, true) {
+                        parts.push(AstGenericPathPart::Named(part));
+                        tail = PathTail::Name;
+                        continue;
+                    }
+
+                    // Match generics
+                    if punct(punct!('<')).expect(c).is_some() {
+                        let mut args = Vec::new();
+
+                        loop {
+                            // Match closing `>`
+                            if punct(punct!('>')).expect(c).is_some() {
+                                break;
+                            }
+
+                            // Match type
+                            let Some(ty) = AstType::parse(c) else {
+                                c.stuck(|_| ());
+                                break;
+                            };
+
+                            args.push(ty);
+
+                            // Match `,`
+                            if punct(punct!(',')).expect(c).is_none() {
+                                if punct(punct!('>')).expect(c).is_none() {
+                                    c.stuck(|_| ());
+                                }
+
+                                break;
+                            }
+                        }
+
+                        tail = PathTail::Name;
+                        parts.push(AstGenericPathPart::Generic(Box::from_iter(args)));
+                        continue;
+                    }
+
+                    break;
+                }
+                PathTail::Name => {
+                    if turbo().expect(c).is_some() {
+                        tail = PathTail::Turbo;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        (tail != PathTail::Empty).then(|| Self {
+            prefix,
+            parts: Box::from_iter(parts),
+        })
     }
 }
 
@@ -810,6 +886,7 @@ impl AstExpr {
         let mut expr = Self::parse_atom(c);
 
         if expr.is_empty() {
+            c.stuck(|_| ());
             return expr;
         }
 
@@ -999,7 +1076,7 @@ impl AstExpr {
         }
 
         // Match path
-        if let Some(path) = AstPath::parse(c) {
+        if let Some(path) = AstGenericPath::parse(c) {
             // Match structure creation
             if let Some(group) = del_group(GroupDelimiter::Brace).expect(c) {
                 let mut c = c.enter(group.cursor());
@@ -1017,7 +1094,7 @@ impl AstExpr {
                         AstExpr::parse(&mut c)
                     } else {
                         AstPathExpr {
-                            path: AstPath::new_local(field),
+                            path: AstGenericPath::new_local(field),
                         }
                         .into()
                     };
